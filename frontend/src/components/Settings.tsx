@@ -329,6 +329,27 @@ function Settings() {
             <div>{settings?.cooldownCycles || 2}</div>
           )}
         </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Min Profit USD:
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={settings?.minProfitUsd || 0.15}
+              onChange={(e) => handleChange('minProfitUsd', parseFloat(e.target.value) || 0.15)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>${settings?.minProfitUsd || 0.15}</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Minimum profit in USD to trigger automatic position exit. Set to 0 to disable profit exits.
+          </div>
+        </div>
       </div>
 
       {!editing && (
