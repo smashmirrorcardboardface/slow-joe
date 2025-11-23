@@ -1,0 +1,213 @@
+.backtest-container {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.backtest-description {
+  color: #666;
+  margin-bottom: 30px;
+  font-size: 14px;
+}
+
+.backtest-form {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 30px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.form-section {
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #eee;
+}
+
+.form-section:last-child {
+  border-bottom: none;
+}
+
+.form-section h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  color: #333;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.form-group input {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.form-group input[type="file"] {
+  padding: 6px;
+}
+
+.form-group small {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #999;
+  line-height: 1.4;
+}
+
+.file-info {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #e8f5e9;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #2e7d32;
+}
+
+.run-backtest-btn {
+  width: 100%;
+  padding: 12px 24px;
+  background: #1976d2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 24px;
+  transition: background 0.2s;
+}
+
+.run-backtest-btn:hover:not(:disabled) {
+  background: #1565c0;
+}
+
+.run-backtest-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin-top: 16px;
+  padding: 12px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.backtest-results {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.backtest-results h3 {
+  margin-top: 0;
+  margin-bottom: 24px;
+}
+
+.results-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.metric-card {
+  background: #f5f5f5;
+  padding: 16px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.metric-label {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.metric-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #333;
+}
+
+.metric-value.positive {
+  color: #2e7d32;
+}
+
+.metric-value.negative {
+  color: #c62828;
+}
+
+.results-chart {
+  margin-bottom: 32px;
+}
+
+.results-chart h4 {
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.results-details h4 {
+  margin-bottom: 16px;
+  color: #333;
+}
+
+.trades-table {
+  overflow-x: auto;
+}
+
+.trades-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.trades-table th {
+  background: #f5f5f5;
+  padding: 10px;
+  text-align: left;
+  font-weight: 600;
+  color: #666;
+  border-bottom: 2px solid #ddd;
+}
+
+.trades-table td {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.trades-table tr:hover {
+  background: #f9f9f9;
+}
+
+.trades-table .buy {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.trades-table .sell {
+  color: #c62828;
+  font-weight: 600;
+}
+

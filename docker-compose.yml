@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: slow-joe-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rotationbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: slow-joe-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: slow-joe-backend
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      FRONTEND_URL: http://localhost:5173
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/rotationbot
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: change_this_in_production
+      EXCHANGE_NAME: kraken
+      KRAKEN_API_KEY: ${KRAKEN_API_KEY:-}
+      KRAKEN_API_SECRET: ${KRAKEN_API_SECRET:-}
+      UNIVERSE: ${UNIVERSE:-BTC-USD,ETH-USD}
+      CADENCE_HOURS: ${CADENCE_HOURS:-6}
+      MAX_ALLOC_FRACTION: ${MAX_ALLOC_FRACTION:-0.2}
+      MIN_ORDER_USD: ${MIN_ORDER_USD:-5}
+      MIN_BALANCE_USD: ${MIN_BALANCE_USD:-20}
+      VOLATILITY_PAUSE_PCT: ${VOLATILITY_PAUSE_PCT:-18}
+      RSI_LOW: ${RSI_LOW:-40}
+      RSI_HIGH: ${RSI_HIGH:-70}
+      EMA_SHORT: ${EMA_SHORT:-12}
+      EMA_LONG: ${EMA_LONG:-26}
+      FILL_TIMEOUT_MINUTES: ${FILL_TIMEOUT_MINUTES:-15}
+      MAKER_OFFSET_PCT: ${MAKER_OFFSET_PCT:-0.001}
+      MAX_SLIPPAGE_PCT: ${MAX_SLIPPAGE_PCT:-0.005}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run start:dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: slow-joe-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+
