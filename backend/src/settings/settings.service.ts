@@ -18,6 +18,7 @@ export interface StrategySettings {
   emaShort: number;
   emaLong: number;
   cooldownCycles: number;
+  minProfitUsd: number;
 }
 
 @Injectable()
@@ -35,6 +36,7 @@ export class SettingsService {
     EMA_SHORT: { value: '12', description: 'Short EMA period' },
     EMA_LONG: { value: '26', description: 'Long EMA period' },
     COOLDOWN_CYCLES: { value: '2', description: 'Number of cycles to wait before re-entering same asset' },
+    MIN_PROFIT_USD: { value: '0.15', description: 'Minimum profit in USD to trigger automatic position exit' },
   };
 
   constructor(
@@ -111,6 +113,7 @@ export class SettingsService {
     const emaShort = await this.getSettingInt('EMA_SHORT');
     const emaLong = await this.getSettingInt('EMA_LONG');
     const cooldownCycles = await this.getSettingInt('COOLDOWN_CYCLES');
+    const minProfitUsd = await this.getSettingNumber('MIN_PROFIT_USD');
 
     return {
       universe,
@@ -125,6 +128,7 @@ export class SettingsService {
       emaShort,
       emaLong,
       cooldownCycles,
+      minProfitUsd,
     };
   }
 
@@ -272,9 +276,10 @@ export class SettingsService {
 
       case 'MIN_ORDER_USD':
       case 'MIN_BALANCE_USD':
+      case 'MIN_PROFIT_USD':
         const minValue = parseFloat(value);
-        if (isNaN(minValue) || minValue <= 0) {
-          throw new BadRequestException(`${key} must be a positive number`);
+        if (isNaN(minValue) || minValue < 0) {
+          throw new BadRequestException(`${key} must be a non-negative number`);
         }
         break;
 
@@ -313,6 +318,7 @@ export class SettingsService {
       emaShort: 'EMA_SHORT',
       emaLong: 'EMA_LONG',
       cooldownCycles: 'COOLDOWN_CYCLES',
+      minProfitUsd: 'MIN_PROFIT_USD',
     };
     return mapping[key] || null;
   }

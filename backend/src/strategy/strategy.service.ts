@@ -221,8 +221,58 @@ export class StrategyService {
     // Determine trades needed
     const trades: TradeDecision[] = [];
 
-    // Close positions not in target
+    // Get profit threshold setting
+    const minProfitUsd = await this.settingsService.getSettingNumber('MIN_PROFIT_USD');
+
+    // Check for profit threshold exits FIRST (before other exit logic)
+    // This ensures we lock in profits as soon as they exceed the threshold
     for (const pos of currentPositions) {
+      try {
+        const ticker = await this.exchangeService.getTicker(pos.symbol);
+        const currentPrice = ticker.price;
+        const entryPrice = parseFloat(pos.entryPrice);
+        const quantity = parseFloat(pos.quantity);
+        
+        // Calculate unrealized profit
+        const profit = quantity * (currentPrice - entryPrice);
+        
+        if (profit >= minProfitUsd) {
+          this.logger.log(`[PROFIT EXIT] Closing position due to profit threshold`, {
+            symbol: pos.symbol,
+            entryPrice: entryPrice.toFixed(4),
+            currentPrice: currentPrice.toFixed(4),
+            quantity: quantity.toFixed(8),
+            profit: profit.toFixed(4),
+            minProfitUsd: minProfitUsd.toFixed(4),
+            profitPct: ((profit / (quantity * entryPrice)) * 100).toFixed(2),
+          });
+          
+          trades.push({
+            symbol: pos.symbol,
+            side: 'sell',
+            quantity: quantity,
+          });
+          
+          // Skip further checks for this position (already marked for exit)
+          continue;
+        }
+      } catch (error: any) {
+        this.logger.warn(`Error checking profit threshold for position`, {
+          symbol: pos.symbol,
+          error: error.message,
+        });
+        // Continue to other exit logic if profit check fails
+      }
+    }
+
+    // Close positions not in target (but skip those already marked for profit exit)
+    const profitExitSymbols = new Set(trades.filter(t => t.side === 'sell').map(t => t.symbol));
+    for (const pos of currentPositions) {
+      // Skip if already marked for profit exit
+      if (profitExitSymbols.has(pos.symbol)) {
+        continue;
+      }
+      
       if (!targetAssets.includes(pos.symbol)) {
         trades.push({
           symbol: pos.symbol,

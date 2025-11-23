@@ -5,6 +5,8 @@ import { SettingsService } from '../settings/settings.service';
 import { LoggerService } from '../logger/logger.service';
 import { ExchangeService } from '../exchange/exchange.service';
 import { ConfigService } from '@nestjs/config';
+import { PositionsService } from '../positions/positions.service';
+import { StrategyService } from '../strategy/strategy.service';
 
 @Injectable()
 export class JobsScheduler {
@@ -14,6 +16,8 @@ export class JobsScheduler {
     private logger: LoggerService,
     private exchangeService: ExchangeService,
     private configService: ConfigService,
+    private positionsService: PositionsService,
+    private strategyService: StrategyService,
   ) {
     this.logger.setContext('JobsScheduler');
   }
@@ -94,6 +98,85 @@ export class JobsScheduler {
       }
     } catch (error: any) {
       this.logger.error('Error checking for stale orders', error.stack, {
+        error: error.message,
+      });
+    }
+  }
+
+  // Check profit thresholds every 5 minutes (independent of strategy evaluation)
+  @Cron('*/5 * * * *')
+  async handleProfitThresholdCheck() {
+    // Only run if strategy is enabled
+    if (!this.strategyService.isEnabled()) {
+      return;
+    }
+
+    try {
+      const minProfitUsd = await this.settingsService.getSettingNumber('MIN_PROFIT_USD');
+      
+      // Skip if profit threshold is disabled (0 or negative)
+      if (minProfitUsd <= 0) {
+        return;
+      }
+
+      const openPositions = await this.positionsService.findOpen();
+      
+      if (openPositions.length === 0) {
+        return;
+      }
+
+      let closedCount = 0;
+
+      for (const pos of openPositions) {
+        try {
+          const ticker = await this.exchangeService.getTicker(pos.symbol);
+          const currentPrice = ticker.price;
+          const entryPrice = parseFloat(pos.entryPrice);
+          const quantity = parseFloat(pos.quantity);
+          
+          // Calculate unrealized profit
+          const profit = quantity * (currentPrice - entryPrice);
+          
+          if (profit >= minProfitUsd) {
+            this.logger.log(`[PROFIT EXIT] Closing position due to profit threshold (frequent check)`, {
+              symbol: pos.symbol,
+              entryPrice: entryPrice.toFixed(4),
+              currentPrice: currentPrice.toFixed(4),
+              quantity: quantity.toFixed(8),
+              profit: profit.toFixed(4),
+              minProfitUsd: minProfitUsd.toFixed(4),
+              profitPct: ((profit / (quantity * entryPrice)) * 100).toFixed(2),
+            });
+            
+            // Get current price for the sell order
+            const orderPrice = ticker.bid; // Use bid price for sell orders
+            
+            // Enqueue sell order
+            await this.jobsService.enqueueOrderExecute(
+              pos.symbol,
+              'sell',
+              quantity,
+              orderPrice,
+            );
+            
+            closedCount++;
+          }
+        } catch (error: any) {
+          this.logger.warn(`Error checking profit threshold for position`, {
+            symbol: pos.symbol,
+            error: error.message,
+          });
+          // Continue with other positions
+        }
+      }
+
+      if (closedCount > 0) {
+        this.logger.log(`[PROFIT EXIT] Enqueued ${closedCount} position(s) for profit exit`, {
+          closedCount,
+        });
+      }
+    } catch (error: any) {
+      this.logger.error('Error during profit threshold check', error.stack, {
         error: error.message,
       });
     }
