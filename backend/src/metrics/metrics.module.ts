@@ -8,6 +8,7 @@ import { TradesModule } from '../trades/trades.module';
 import { JobsModule } from '../jobs/jobs.module';
 import { HealthModule } from '../health/health.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { ExchangeModule } from '../exchange/exchange.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
     forwardRef(() => JobsModule),
     HealthModule,
     RealtimeModule,
+    ExchangeModule,
   ],
   controllers: [MetricsController],
   providers: [MetricsService],

@@ -235,10 +235,31 @@ export class StrategyService {
     const profitFeeBufferPct = await this.settingsService.getSettingNumber('PROFIT_FEE_BUFFER_PCT');
     const volatilityAdjustmentFactor = await this.settingsService.getSettingNumber('VOLATILITY_ADJUSTMENT_FACTOR');
 
+    // Check for existing open sell orders to avoid duplicates
+    let pendingSellSymbols = new Set<string>();
+    try {
+      const openOrders = await this.exchangeService.getOpenOrders();
+      pendingSellSymbols = new Set(
+        openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
+      );
+    } catch (ordersError: any) {
+      this.logger.debug(`Could not check open orders, proceeding with profit/loss check`, {
+        error: ordersError.message,
+      });
+    }
+
     // Check for profit/loss threshold exits FIRST (before other exit logic)
     // This ensures we lock in profits or cut losses as soon as thresholds are hit
     for (const pos of currentPositions) {
       try {
+        // Skip if there's already a pending sell order for this symbol
+        if (pendingSellSymbols.has(pos.symbol)) {
+          this.logger.debug(`Skipping profit/loss check - sell order already pending`, {
+            symbol: pos.symbol,
+          });
+          continue;
+        }
+
         const ticker = await this.exchangeService.getTicker(pos.symbol);
         const currentPrice = ticker.price;
         const entryPrice = parseFloat(pos.entryPrice);

@@ -203,10 +203,24 @@ export class JobsScheduler {
         return;
       }
 
+      // Check for existing open sell orders to avoid duplicates
+      const openOrders = await this.exchangeService.getOpenOrders();
+      const pendingSellSymbols = new Set(
+        openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
+      );
+
       let closedCount = 0;
 
       for (const pos of openPositions) {
         try {
+          // Skip if there's already a pending sell order for this symbol
+          if (pendingSellSymbols.has(pos.symbol)) {
+            this.logger.debug(`Skipping profit/loss check - sell order already pending`, {
+              symbol: pos.symbol,
+            });
+            continue;
+          }
+
           const ticker = await this.exchangeService.getTicker(pos.symbol);
           const currentPrice = ticker.price;
           const entryPrice = parseFloat(pos.entryPrice);

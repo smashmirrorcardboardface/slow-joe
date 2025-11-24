@@ -293,6 +293,36 @@ export class KrakenAdapter {
     };
   }
 
+  async getAllBalances(): Promise<{ [asset: string]: number }> {
+    try {
+      const data = await this.privateRequest('/0/private/Balance');
+      if (!data) {
+        return {};
+      }
+      
+      // Convert Kraken asset codes to our format
+      const reverseAssetMapping: { [key: string]: string } = {
+        'ZUSD': 'USD',
+        'XBT': 'BTC',
+        'ZGBP': 'GBP',
+      };
+      
+      const balances: { [asset: string]: number } = {};
+      for (const [krakenAsset, balance] of Object.entries(data)) {
+        const asset = reverseAssetMapping[krakenAsset] || krakenAsset;
+        const balanceValue = parseFloat(balance as string);
+        if (balanceValue > 0) {
+          balances[asset] = balanceValue;
+        }
+      }
+      
+      return balances;
+    } catch (error: any) {
+      console.error('Error fetching all balances:', error);
+      return {};
+    }
+  }
+
   async getBalance(asset: string): Promise<any> {
     try {
       const data = await this.privateRequest('/0/private/Balance');

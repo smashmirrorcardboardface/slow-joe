@@ -48,6 +48,13 @@ export class OrderExecuteProcessor extends WorkerHost {
     const pollIntervalSeconds = 30; // Poll every 30 seconds
 
     try {
+      // Round quantity to lot size before placing order (Kraken requires this)
+      const roundedQuantity = await this.exchangeService.roundToLotSize(symbol, quantity);
+      
+      if (roundedQuantity <= 0) {
+        throw new Error(`Invalid quantity after rounding: ${roundedQuantity} (original: ${quantity})`);
+      }
+
       // For sell orders, verify we have enough asset balance before placing order
       if (side === 'sell') {
         // Extract base currency from symbol (e.g., "ADA-USD" -> "ADA")
@@ -58,23 +65,25 @@ export class OrderExecuteProcessor extends WorkerHost {
           // For sell orders, only free balance matters (locked assets are in pending orders)
           const freeBalance = parseFloat(assetBalance.free.toString());
           
+          // Use rounded quantity for balance check (this is what will actually be ordered)
           // Allow exact match or small rounding tolerance (0.01% or minimum 0.0001)
           // This accounts for floating point precision and small rounding differences
-          const roundingTolerance = Math.max(quantity * 0.0001, 0.0001);
-          const minRequiredBalance = quantity - roundingTolerance;
+          const roundingTolerance = Math.max(roundedQuantity * 0.0001, 0.0001);
+          const minRequiredBalance = roundedQuantity - roundingTolerance;
           
           if (freeBalance < minRequiredBalance) {
-            const errorMsg = `Insufficient ${baseCurrency} balance for sell order. Required: ${quantity.toFixed(8)}, Available (free): ${freeBalance.toFixed(8)}`;
+            const errorMsg = `Insufficient ${baseCurrency} balance for sell order. Required: ${roundedQuantity.toFixed(8)}, Available (free): ${freeBalance.toFixed(8)}`;
             this.logger.warn(`[BALANCE CHECK FAILED] ${errorMsg}`, {
               jobId: job.id,
               symbol,
               side,
-              quantity: quantity.toFixed(8),
+              originalQuantity: quantity.toFixed(8),
+              roundedQuantity: roundedQuantity.toFixed(8),
               baseCurrency,
               freeBalance: freeBalance.toFixed(8),
               lockedBalance: parseFloat(assetBalance.locked.toString()).toFixed(8),
               minRequiredBalance: minRequiredBalance.toFixed(8),
-              difference: (freeBalance - quantity).toFixed(8),
+              difference: (freeBalance - roundedQuantity).toFixed(8),
             });
             
             // Try to get position info to see if there's a mismatch
@@ -87,7 +96,8 @@ export class OrderExecuteProcessor extends WorkerHost {
                   symbol,
                   positionQuantity: positionQuantity.toFixed(8),
                   actualFreeBalance: freeBalance.toFixed(8),
-                  requestedQuantity: quantity.toFixed(8),
+                  requestedQuantity: roundedQuantity.toFixed(8),
+                  originalQuantity: quantity.toFixed(8),
                 });
               }
             } catch (posError: any) {
@@ -100,9 +110,10 @@ export class OrderExecuteProcessor extends WorkerHost {
           this.logger.log(`[BALANCE CHECK PASSED] Sufficient ${baseCurrency} balance for sell order`, {
             jobId: job.id,
             symbol,
-            quantity: quantity.toFixed(8),
+            originalQuantity: quantity.toFixed(8),
+            roundedQuantity: roundedQuantity.toFixed(8),
             freeBalance: freeBalance.toFixed(8),
-            difference: (freeBalance - quantity).toFixed(8),
+            difference: (freeBalance - roundedQuantity).toFixed(8),
           });
         } catch (balanceError: any) {
           // If balance check fails, log and rethrow
@@ -121,19 +132,21 @@ export class OrderExecuteProcessor extends WorkerHost {
       }
 
       const ticker = await this.exchangeService.getTicker(symbol);
+      // For BUY: place limit order slightly below ask to get maker fee
+      // For SELL: place limit order slightly above bid to get maker fee
       const limitPrice = side === 'buy' 
-        ? ticker.bid * (1 - makerOffsetPct)
-        : ticker.ask * (1 + makerOffsetPct);
+        ? ticker.ask * (1 - makerOffsetPct)
+        : ticker.bid * (1 + makerOffsetPct);
 
       // Kraken userref must be numeric (integer), so use timestamp-based numeric ID
       // Use last 9 digits of timestamp to fit in int32 range
       const clientOrderId = parseInt(Date.now().toString().slice(-9), 10).toString();
       
-      // Place limit order
+      // Place limit order with rounded quantity
       const orderResult = await this.exchangeService.placeLimitOrder(
         symbol,
         side,
-        quantity,
+        roundedQuantity,
         limitPrice,
         clientOrderId,
       );
@@ -144,7 +157,8 @@ export class OrderExecuteProcessor extends WorkerHost {
         orderId: orderResult.orderId,
         limitPrice,
         side,
-        quantity,
+        originalQuantity: quantity,
+        roundedQuantity: roundedQuantity,
       });
 
       // Poll for fill with timeout
@@ -176,7 +190,7 @@ export class OrderExecuteProcessor extends WorkerHost {
         await this.tradesService.create({
           symbol,
           side,
-          quantity: orderStatus.filledQuantity?.toString() || quantity.toString(),
+          quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
           price: orderStatus.filledPrice?.toString() || limitPrice.toString(),
           fee: fee.toString(),
           exchangeOrderId: orderResult.orderId,
@@ -186,7 +200,7 @@ export class OrderExecuteProcessor extends WorkerHost {
         if (side === 'buy') {
           await this.positionsService.create({
             symbol,
-            quantity: orderStatus.filledQuantity?.toString() || quantity.toString(),
+            quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
             entryPrice: orderStatus.filledPrice?.toString() || limitPrice.toString(),
             status: 'open',
           });
@@ -239,7 +253,7 @@ export class OrderExecuteProcessor extends WorkerHost {
             await this.tradesService.create({
               symbol,
               side,
-              quantity: finalStatus.filledQuantity?.toString() || quantity.toString(),
+              quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
               price: finalStatus.filledPrice?.toString() || limitPrice.toString(),
               fee: fee.toString(),
               exchangeOrderId: orderResult.orderId,
@@ -247,7 +261,7 @@ export class OrderExecuteProcessor extends WorkerHost {
             if (side === 'buy') {
               await this.positionsService.create({
                 symbol,
-                quantity: finalStatus.filledQuantity?.toString() || quantity.toString(),
+                quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
                 entryPrice: finalStatus.filledPrice?.toString() || limitPrice.toString(),
                 status: 'open',
               });
@@ -271,7 +285,8 @@ export class OrderExecuteProcessor extends WorkerHost {
         // Place market order as fallback
         const currentTicker = await this.exchangeService.getTicker(symbol);
         const expectedPrice = side === 'buy' ? currentTicker.ask : currentTicker.bid;
-        const slippagePct = Math.abs((expectedPrice - price) / price);
+        // Compare against limitPrice (what we tried to get) not original price (from job data)
+        const slippagePct = Math.abs((expectedPrice - limitPrice) / limitPrice);
 
         if (slippagePct > maxSlippagePct) {
           this.logger.warn(`Expected slippage exceeds max, skipping market order`, {
@@ -286,17 +301,18 @@ export class OrderExecuteProcessor extends WorkerHost {
         this.logger.log(`Placing market order`, {
           jobId: job.id,
           symbol,
+          limitPrice,
           expectedPrice,
           slippagePct: slippagePct * 100,
           side,
-          quantity,
+          quantity: roundedQuantity,
         });
         
         const marketOrderId = `market-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         const marketOrderResult = await this.exchangeService.placeMarketOrder(
           symbol,
           side,
-          quantity,
+          roundedQuantity,
           marketOrderId,
         );
 
@@ -313,7 +329,7 @@ export class OrderExecuteProcessor extends WorkerHost {
           await this.tradesService.create({
             symbol,
             side,
-            quantity: marketOrderStatus.filledQuantity?.toString() || quantity.toString(),
+            quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
             price: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
             fee: fee.toString(),
             exchangeOrderId: marketOrderResult.orderId,
@@ -323,7 +339,7 @@ export class OrderExecuteProcessor extends WorkerHost {
           if (side === 'buy') {
             await this.positionsService.create({
               symbol,
-              quantity: marketOrderStatus.filledQuantity?.toString() || quantity.toString(),
+              quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
               entryPrice: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
               status: 'open',
             });

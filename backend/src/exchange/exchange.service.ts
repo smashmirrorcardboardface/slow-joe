@@ -123,6 +123,10 @@ export class ExchangeService {
     return this.adapter.getTicker(symbol);
   }
 
+  async getAllBalances(): Promise<{ [asset: string]: number }> {
+    return this.adapter.getAllBalances();
+  }
+
   async getBalance(asset: string): Promise<Balance> {
     return this.adapter.getBalance(asset);
   }

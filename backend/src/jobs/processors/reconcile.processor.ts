@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
 import { RealtimeService } from '../../realtime/realtime.service';
+import { SettingsService } from '../../settings/settings.service';
 
 @Processor('reconcile')
 @Injectable()
@@ -22,6 +23,7 @@ export class ReconcileProcessor extends WorkerHost {
     private logger: LoggerService,
     private alertsService: AlertsService,
     private realtimeService: RealtimeService,
+    private settingsService: SettingsService,
   ) {
     super();
     this.logger.setContext('ReconcileProcessor');
@@ -31,6 +33,9 @@ export class ReconcileProcessor extends WorkerHost {
     this.logger.log('Starting reconciliation', { jobId: job.id });
 
     try {
+      // Sync positions from exchange balances first
+      await this.syncPositionsFromBalances(job.id);
+      
       // Get balances from exchange
       const baseCurrency = 'USD';
       const balance = await this.exchangeService.getBalance(baseCurrency);
@@ -169,6 +174,134 @@ export class ReconcileProcessor extends WorkerHost {
       }
     } catch (error: any) {
       this.logger.error('Error checking for stale orders', error.stack, {
+        jobId,
+        error: error.message,
+      });
+    }
+  }
+
+  private async syncPositionsFromBalances(jobId: string) {
+    try {
+      // Get all balances from exchange
+      const allBalances = await this.exchangeService.getAllBalances();
+      
+      // Get universe to know which symbols we trade
+      const universeStr = await this.settingsService.getSetting('UNIVERSE');
+      const universe = universeStr.split(',').map(s => s.trim());
+      
+      // Get current open positions from database
+      const dbPositions = await this.positionsService.findOpen();
+      const dbPositionSymbols = new Set(dbPositions.map(p => p.symbol));
+      
+      // Map of base asset to symbol (e.g., AVAX -> AVAX-USD)
+      const assetToSymbol: { [asset: string]: string } = {};
+      for (const symbol of universe) {
+        const baseAsset = symbol.split('-')[0];
+        assetToSymbol[baseAsset] = symbol;
+      }
+      
+      // For each non-USD asset with balance, check if we have a position
+      for (const [asset, balance] of Object.entries(allBalances)) {
+        if (asset === 'USD') continue; // Skip USD
+        
+        const symbol = assetToSymbol[asset];
+        if (!symbol) {
+          // Asset not in universe, skip it
+          this.logger.debug(`Skipping ${asset} - not in trading universe`, {
+            jobId,
+            asset,
+            balance,
+          });
+          continue;
+        }
+        
+        const quantity = balance;
+        if (quantity <= 0) continue;
+        
+        // Check if we already have a position for this symbol
+        if (dbPositionSymbols.has(symbol)) {
+          // Position exists, verify quantity matches
+          const dbPosition = dbPositions.find(p => p.symbol === symbol);
+          if (dbPosition) {
+            const dbQuantity = parseFloat(dbPosition.quantity);
+            const diff = Math.abs(dbQuantity - quantity);
+            if (diff > 0.0001) { // Allow small rounding differences
+              this.logger.warn(`Position quantity mismatch for ${symbol}`, {
+                jobId,
+                symbol,
+                dbQuantity,
+                exchangeQuantity: quantity,
+                difference: diff,
+              });
+              // Update quantity if significantly different
+              if (diff > 0.01) {
+                await this.positionsService.update(dbPosition.id, {
+                  quantity: quantity.toString(),
+                });
+                this.logger.log(`Updated position quantity for ${symbol}`, {
+                  jobId,
+                  symbol,
+                  oldQuantity: dbQuantity,
+                  newQuantity: quantity,
+                });
+              }
+            }
+          }
+        } else {
+          // No position in database, create one
+          // Use current price as entry price (best estimate)
+          try {
+            const ticker = await this.exchangeService.getTicker(symbol);
+            const entryPrice = ticker.price;
+            
+            await this.positionsService.create({
+              symbol,
+              quantity: quantity.toString(),
+              entryPrice: entryPrice.toString(),
+              status: 'open',
+            });
+            
+            this.logger.log(`Created missing position from exchange balance`, {
+              jobId,
+              symbol,
+              quantity,
+              entryPrice,
+            });
+          } catch (tickerError: any) {
+            this.logger.warn(`Could not get ticker for ${symbol}, using estimated entry price`, {
+              jobId,
+              symbol,
+              error: tickerError.message,
+            });
+            // Create position with current price as estimate
+            // We'll update it on next reconcile when ticker is available
+            await this.positionsService.create({
+              symbol,
+              quantity: quantity.toString(),
+              entryPrice: '0', // Will be updated on next reconcile
+              status: 'open',
+            });
+          }
+        }
+      }
+      
+      // Check for positions in database that don't exist on exchange (should be closed)
+      for (const dbPos of dbPositions) {
+        const baseAsset = dbPos.symbol.split('-')[0];
+        const exchangeBalance = allBalances[baseAsset] || 0;
+        
+        if (exchangeBalance <= 0.0001) { // Effectively zero
+          this.logger.warn(`Position exists in DB but not on exchange, closing`, {
+            jobId,
+            symbol: dbPos.symbol,
+            dbQuantity: dbPos.quantity,
+            exchangeBalance,
+          });
+          await this.positionsService.closePosition(dbPos.id);
+        }
+      }
+    } catch (error: any) {
+      this.logger.error('Error syncing positions from balances', error.stack, {
         jobId,
         error: error.message,
       });
