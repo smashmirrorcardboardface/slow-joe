@@ -188,5 +188,81 @@ export class ExchangeController {
       };
     }
   }
+
+  @Post('cancel-order/:orderId')
+  async cancelOrder(@Param('orderId') orderId: string) {
+    try {
+      const cancelled = await this.exchangeService.cancelOrder(orderId);
+      if (cancelled) {
+        this.logger.log(`Manually cancelled order`, { orderId });
+        return {
+          success: true,
+          message: 'Order cancelled successfully',
+          orderId,
+        };
+      } else {
+        return {
+          success: false,
+          message: 'Failed to cancel order (may already be filled or cancelled)',
+          orderId,
+        };
+      }
+    } catch (error: any) {
+      this.logger.error(`Error cancelling order`, error.stack, {
+        orderId,
+        error: error.message,
+      });
+      return {
+        success: false,
+        error: error.message || 'Failed to cancel order',
+        orderId,
+      };
+    }
+  }
+
+  @Post('cancel-all-orders')
+  async cancelAllOrders() {
+    try {
+      const orders = await this.exchangeService.getOpenOrders();
+      let cancelledCount = 0;
+      const errors: string[] = [];
+
+      for (const order of orders) {
+        try {
+          const cancelled = await this.exchangeService.cancelOrder(order.orderId);
+          if (cancelled) {
+            cancelledCount++;
+            this.logger.log(`Cancelled order`, {
+              orderId: order.orderId,
+              symbol: order.symbol,
+              side: order.side,
+            });
+          }
+        } catch (error: any) {
+          errors.push(`${order.symbol} (${order.orderId}): ${error.message}`);
+          this.logger.warn(`Error cancelling order`, {
+            orderId: order.orderId,
+            symbol: order.symbol,
+            error: error.message,
+          });
+        }
+      }
+
+      return {
+        success: cancelledCount > 0,
+        cancelledCount,
+        totalOrders: orders.length,
+        errors: errors.length > 0 ? errors : undefined,
+      };
+    } catch (error: any) {
+      this.logger.error(`Error cancelling all orders`, error.stack, {
+        error: error.message,
+      });
+      return {
+        success: false,
+        error: error.message || 'Failed to cancel orders',
+      };
+    }
+  }
 }
 

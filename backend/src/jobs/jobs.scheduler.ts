@@ -59,18 +59,75 @@ export class JobsScheduler {
       const now = Date.now();
       let cancelledCount = 0;
 
+      this.logger.debug(`Checking ${openOrders.length} open order(s) for staleness`, {
+        openOrdersCount: openOrders.length,
+        thresholdMinutes: fillTimeoutMinutes,
+      });
+
       for (const order of openOrders) {
         const openedAt = order.openedAt instanceof Date 
           ? order.openedAt 
           : new Date(order.openedAt);
         const orderAge = now - openedAt.getTime();
+        const ageMinutes = Math.round(orderAge / 60000);
         
+        // For sell orders, be more aggressive - check if we actually have the asset
+        // If we don't have enough balance, the order will never fill, so cancel it immediately
+        if (order.side === 'sell') {
+          try {
+            const baseCurrency = order.symbol.split('-')[0];
+            const assetBalance = await this.exchangeService.getBalance(baseCurrency);
+            const freeBalance = parseFloat(assetBalance.free.toString());
+            const requiredQuantity = order.remainingQuantity || order.quantity;
+            
+            // Allow small rounding tolerance (0.01% or minimum 0.0001)
+            const roundingTolerance = Math.max(requiredQuantity * 0.0001, 0.0001);
+            const minRequiredBalance = requiredQuantity - roundingTolerance;
+            
+            // If we don't have enough balance, cancel immediately (order will never fill)
+            if (freeBalance < minRequiredBalance) {
+              this.logger.warn(`Cancelling sell order with insufficient balance`, {
+                orderId: order.orderId,
+                symbol: order.symbol,
+                side: order.side,
+                requiredQuantity: requiredQuantity.toFixed(8),
+                availableBalance: freeBalance.toFixed(8),
+                ageMinutes,
+              });
+
+              try {
+                await this.exchangeService.cancelOrder(order.orderId);
+                cancelledCount++;
+                this.logger.log(`Cancelled sell order with insufficient balance`, {
+                  orderId: order.orderId,
+                  symbol: order.symbol,
+                });
+                continue; // Skip to next order
+              } catch (cancelError: any) {
+                this.logger.warn(`Error cancelling order with insufficient balance`, {
+                  orderId: order.orderId,
+                  symbol: order.symbol,
+                  error: cancelError.message,
+                });
+              }
+            }
+          } catch (balanceError: any) {
+            // If balance check fails, continue with normal stale check
+            this.logger.debug(`Could not check balance for sell order, using normal stale check`, {
+              orderId: order.orderId,
+              symbol: order.symbol,
+              error: balanceError.message,
+            });
+          }
+        }
+        
+        // Normal stale order check (for all orders or if balance check passed)
         if (orderAge > staleThresholdMs) {
           this.logger.warn(`Found stale order, cancelling`, {
             orderId: order.orderId,
             symbol: order.symbol,
             side: order.side,
-            ageMinutes: Math.round(orderAge / 60000),
+            ageMinutes,
             thresholdMinutes: fillTimeoutMinutes,
           });
 
@@ -88,12 +145,26 @@ export class JobsScheduler {
               error: cancelError.message,
             });
           }
+        } else {
+          // Log orders that are still within timeout (for debugging)
+          this.logger.debug(`Order still within timeout`, {
+            orderId: order.orderId,
+            symbol: order.symbol,
+            side: order.side,
+            ageMinutes,
+            remainingMinutes: Math.round((staleThresholdMs - orderAge) / 60000),
+          });
         }
       }
 
       if (cancelledCount > 0) {
         this.logger.log(`Cancelled ${cancelledCount} stale order(s)`, {
           cancelledCount,
+          totalChecked: openOrders.length,
+        });
+      } else if (openOrders.length > 0) {
+        this.logger.debug(`No stale orders found (${openOrders.length} order(s) still within timeout)`, {
+          openOrdersCount: openOrders.length,
         });
       }
     } catch (error: any) {

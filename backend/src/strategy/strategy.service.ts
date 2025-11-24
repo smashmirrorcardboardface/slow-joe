@@ -59,7 +59,12 @@ export class StrategyService {
     const ema26 = ema26Values[ema26Values.length - 1];
     const rsi = rsiValues[rsiValues.length - 1] ?? 50;
 
-    const score = (ema12 / ema26) * (1 - Math.abs(rsi - 50) / 50);
+    // Score prioritizes EMA trend strength (ema12/ema26 ratio)
+    // RSI is already filtered by entry criteria, so we use it as a secondary factor
+    // Reward RSI values in the 45-55 range (sweet spot for momentum) with a small boost
+    const emaRatio = ema12 / ema26;
+    const rsiBonus = rsi >= 45 && rsi <= 55 ? 1.05 : 1.0; // 5% bonus for optimal RSI
+    const score = emaRatio * rsiBonus;
 
     return { ema12, ema26, rsi, score };
   }

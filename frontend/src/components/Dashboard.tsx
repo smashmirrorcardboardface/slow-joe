@@ -1515,7 +1515,7 @@ function Dashboard() {
                               tickFormatter={(value) => `$${value.toFixed(2)}`}
                               stroke="#4ade80"
                               style={{ fontSize: '0.75rem' }}
-                              label={{ value: 'P&L ($)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#4ade80' } }}
+                              label={{ value: 'Cumulative P&L ($)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#4ade80' } }}
                             />
                             <YAxis 
                               yAxisId="right"
@@ -1523,7 +1523,7 @@ function Dashboard() {
                               tickFormatter={(value) => `$${value.toFixed(2)}`}
                               stroke="#fbbf24"
                               style={{ fontSize: '0.75rem' }}
-                              label={{ value: 'Fees ($)', angle: 90, position: 'insideRight', style: { textAnchor: 'middle', fill: '#fbbf24' } }}
+                              label={{ value: 'Cumulative Fees ($)', angle: 90, position: 'insideRight', style: { textAnchor: 'middle', fill: '#fbbf24' } }}
                             />
                             <Tooltip 
                               contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e0e0e0' }}
@@ -1531,7 +1531,11 @@ function Dashboard() {
                               formatter={(value: number, name: string) => {
                                 if (name === 'pnl') {
                                   const val = typeof value === 'number' ? value : parseFloat(String(value));
-                                  return [`$${val.toFixed(2)}`, 'P&L'];
+                                  return [`$${val.toFixed(2)}`, 'Cumulative P&L'];
+                                }
+                                if (name === 'cumulativePnl') {
+                                  const val = typeof value === 'number' ? value : parseFloat(String(value));
+                                  return [`$${val.toFixed(2)}`, 'Cumulative P&L'];
                                 }
                                 const val = typeof value === 'number' ? value : parseFloat(String(value));
                                 return [`$${val.toFixed(4)}`, 'Cumulative Fees'];
@@ -1540,7 +1544,8 @@ function Dashboard() {
                             <Legend 
                               wrapperStyle={{ paddingTop: '1rem' }}
                               formatter={(value) => {
-                                if (value === 'pnl') return 'Profit/Loss';
+                                if (value === 'pnl') return 'Cumulative P&L (Area)';
+                                if (value === 'cumulativePnl') return 'Cumulative P&L (Line)';
                                 if (value === 'fees') return 'Cumulative Fees';
                                 return value;
                               }}
@@ -1550,10 +1555,19 @@ function Dashboard() {
                               type="monotone" 
                               dataKey="pnl" 
                               stroke="#4ade80" 
-                              fillOpacity={1}
+                              fillOpacity={0.3}
                               fill="url(#pnlGradient)"
-                              strokeWidth={2}
+                              strokeWidth={1}
                               name="pnl"
+                            />
+                            <Line 
+                              yAxisId="left"
+                              type="monotone" 
+                              dataKey="pnl" 
+                              stroke="#4ade80" 
+                              strokeWidth={2}
+                              dot={false}
+                              name="cumulativePnl"
                             />
                             <Line 
                               yAxisId="right"

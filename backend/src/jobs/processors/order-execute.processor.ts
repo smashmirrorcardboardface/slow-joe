@@ -58,12 +58,13 @@ export class OrderExecuteProcessor extends WorkerHost {
           // For sell orders, only free balance matters (locked assets are in pending orders)
           const freeBalance = parseFloat(assetBalance.free.toString());
           
-          // Add small buffer for rounding (0.1% or minimum 0.0001)
-          const roundingBuffer = Math.max(quantity * 0.001, 0.0001);
-          const requiredBalance = quantity + roundingBuffer;
+          // Allow exact match or small rounding tolerance (0.01% or minimum 0.0001)
+          // This accounts for floating point precision and small rounding differences
+          const roundingTolerance = Math.max(quantity * 0.0001, 0.0001);
+          const minRequiredBalance = quantity - roundingTolerance;
           
-          if (freeBalance < requiredBalance) {
-            const errorMsg = `Insufficient ${baseCurrency} balance for sell order. Required: ${requiredBalance.toFixed(8)}, Available (free): ${freeBalance.toFixed(8)}`;
+          if (freeBalance < minRequiredBalance) {
+            const errorMsg = `Insufficient ${baseCurrency} balance for sell order. Required: ${quantity.toFixed(8)}, Available (free): ${freeBalance.toFixed(8)}`;
             this.logger.warn(`[BALANCE CHECK FAILED] ${errorMsg}`, {
               jobId: job.id,
               symbol,
@@ -72,7 +73,8 @@ export class OrderExecuteProcessor extends WorkerHost {
               baseCurrency,
               freeBalance: freeBalance.toFixed(8),
               lockedBalance: parseFloat(assetBalance.locked.toString()).toFixed(8),
-              requiredBalance: requiredBalance.toFixed(8),
+              minRequiredBalance: minRequiredBalance.toFixed(8),
+              difference: (freeBalance - quantity).toFixed(8),
             });
             
             // Try to get position info to see if there's a mismatch
@@ -100,7 +102,7 @@ export class OrderExecuteProcessor extends WorkerHost {
             symbol,
             quantity: quantity.toFixed(8),
             freeBalance: freeBalance.toFixed(8),
-            requiredBalance: requiredBalance.toFixed(8),
+            difference: (freeBalance - quantity).toFixed(8),
           });
         } catch (balanceError: any) {
           // If balance check fails, log and rethrow
