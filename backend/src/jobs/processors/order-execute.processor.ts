@@ -48,6 +48,76 @@ export class OrderExecuteProcessor extends WorkerHost {
     const pollIntervalSeconds = 30; // Poll every 30 seconds
 
     try {
+      // For sell orders, verify we have enough asset balance before placing order
+      if (side === 'sell') {
+        // Extract base currency from symbol (e.g., "ADA-USD" -> "ADA")
+        const baseCurrency = symbol.split('-')[0];
+        
+        try {
+          const assetBalance = await this.exchangeService.getBalance(baseCurrency);
+          // For sell orders, only free balance matters (locked assets are in pending orders)
+          const freeBalance = parseFloat(assetBalance.free.toString());
+          
+          // Add small buffer for rounding (0.1% or minimum 0.0001)
+          const roundingBuffer = Math.max(quantity * 0.001, 0.0001);
+          const requiredBalance = quantity + roundingBuffer;
+          
+          if (freeBalance < requiredBalance) {
+            const errorMsg = `Insufficient ${baseCurrency} balance for sell order. Required: ${requiredBalance.toFixed(8)}, Available (free): ${freeBalance.toFixed(8)}`;
+            this.logger.warn(`[BALANCE CHECK FAILED] ${errorMsg}`, {
+              jobId: job.id,
+              symbol,
+              side,
+              quantity: quantity.toFixed(8),
+              baseCurrency,
+              freeBalance: freeBalance.toFixed(8),
+              lockedBalance: parseFloat(assetBalance.locked.toString()).toFixed(8),
+              requiredBalance: requiredBalance.toFixed(8),
+            });
+            
+            // Try to get position info to see if there's a mismatch
+            try {
+              const positions = await this.positionsService.findBySymbol(symbol);
+              const openPositions = positions.filter(p => p.status === 'open');
+              if (openPositions.length > 0) {
+                const positionQuantity = openPositions.reduce((sum, p) => sum + parseFloat(p.quantity), 0);
+                this.logger.warn(`Position quantity mismatch detected`, {
+                  symbol,
+                  positionQuantity: positionQuantity.toFixed(8),
+                  actualFreeBalance: freeBalance.toFixed(8),
+                  requestedQuantity: quantity.toFixed(8),
+                });
+              }
+            } catch (posError: any) {
+              // Ignore position lookup errors
+            }
+            
+            throw new Error(errorMsg);
+          }
+          
+          this.logger.log(`[BALANCE CHECK PASSED] Sufficient ${baseCurrency} balance for sell order`, {
+            jobId: job.id,
+            symbol,
+            quantity: quantity.toFixed(8),
+            freeBalance: freeBalance.toFixed(8),
+            requiredBalance: requiredBalance.toFixed(8),
+          });
+        } catch (balanceError: any) {
+          // If balance check fails, log and rethrow
+          if (balanceError.message.includes('Insufficient')) {
+            throw balanceError;
+          }
+          // For other errors (API failures, etc.), log warning but continue
+          // The exchange will reject the order if balance is truly insufficient
+          this.logger.warn(`Could not verify balance before sell order, proceeding anyway`, {
+            jobId: job.id,
+            symbol,
+            baseCurrency: symbol.split('-')[0],
+            error: balanceError.message,
+          });
+        }
+      }
+
       const ticker = await this.exchangeService.getTicker(symbol);
       const limitPrice = side === 'buy' 
         ? ticker.bid * (1 - makerOffsetPct)

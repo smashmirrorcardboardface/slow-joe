@@ -347,7 +347,141 @@ function Settings() {
             <div>${settings?.minProfitUsd || 0.15}</div>
           )}
           <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
-            Minimum profit in USD to trigger automatic position exit. Set to 0 to disable profit exits.
+            Minimum profit in USD (fallback for small positions). Set to 0 to disable.
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Max Loss USD (Stop-Loss):
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={settings?.maxLossUsd || 0.15}
+              onChange={(e) => handleChange('maxLossUsd', parseFloat(e.target.value) || 0.15)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>${settings?.maxLossUsd || 0.15}</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Maximum loss in USD (fallback for small positions). Set to 0 to disable.
+          </div>
+        </div>
+
+        <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid #374151' }}>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: '#60a5fa' }}>Advanced Exit Settings</h3>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Min Profit %:
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.1"
+              value={settings?.minProfitPct || 3}
+              onChange={(e) => handleChange('minProfitPct', parseFloat(e.target.value) || 3)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>{settings?.minProfitPct || 3}%</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Minimum profit percentage to trigger exit (e.g., 3 = 3%). Automatically adjusted to cover fees.
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Max Loss %:
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.1"
+              value={settings?.maxLossPct || 2}
+              onChange={(e) => handleChange('maxLossPct', parseFloat(e.target.value) || 2)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>{settings?.maxLossPct || 2}%</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Maximum loss percentage to trigger stop-loss (e.g., 2 = 2%). Adjusted for volatility.
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Min Position Value for Exit (USD):
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={settings?.minPositionValueForExit || 5}
+              onChange={(e) => handleChange('minPositionValueForExit', parseFloat(e.target.value) || 5)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>${settings?.minPositionValueForExit || 5}</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Positions below this value won't trigger profit/loss exits (avoids fee drag on tiny positions).
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Profit Fee Buffer %:
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0"
+              max="10"
+              step="0.1"
+              value={settings?.profitFeeBufferPct || 0.5}
+              onChange={(e) => handleChange('profitFeeBufferPct', parseFloat(e.target.value) || 0.5)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>{settings?.profitFeeBufferPct || 0.5}%</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Additional percentage buffer above fees to ensure profitable exits (e.g., 0.5 = 0.5%).
+          </div>
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+            Volatility Adjustment Factor:
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min="0.5"
+              max="5"
+              step="0.1"
+              value={settings?.volatilityAdjustmentFactor || 1.5}
+              onChange={(e) => handleChange('volatilityAdjustmentFactor', parseFloat(e.target.value) || 1.5)}
+              style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #374151', background: '#1f2937', color: '#fff' }}
+            />
+          ) : (
+            <div>{settings?.volatilityAdjustmentFactor || 1.5}x</div>
+          )}
+          <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.25rem' }}>
+            Multiplier for stop-loss in volatile markets (higher = wider stops). Applied when 24h volatility &gt; 10%.
           </div>
         </div>
       </div>

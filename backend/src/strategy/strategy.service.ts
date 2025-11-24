@@ -221,11 +221,17 @@ export class StrategyService {
     // Determine trades needed
     const trades: TradeDecision[] = [];
 
-    // Get profit threshold setting
+    // Get profit and loss threshold settings
     const minProfitUsd = await this.settingsService.getSettingNumber('MIN_PROFIT_USD');
+    const maxLossUsd = await this.settingsService.getSettingNumber('MAX_LOSS_USD');
+    const minProfitPct = await this.settingsService.getSettingNumber('MIN_PROFIT_PCT');
+    const maxLossPct = await this.settingsService.getSettingNumber('MAX_LOSS_PCT');
+    const minPositionValueForExit = await this.settingsService.getSettingNumber('MIN_POSITION_VALUE_FOR_EXIT');
+    const profitFeeBufferPct = await this.settingsService.getSettingNumber('PROFIT_FEE_BUFFER_PCT');
+    const volatilityAdjustmentFactor = await this.settingsService.getSettingNumber('VOLATILITY_ADJUSTMENT_FACTOR');
 
-    // Check for profit threshold exits FIRST (before other exit logic)
-    // This ensures we lock in profits as soon as they exceed the threshold
+    // Check for profit/loss threshold exits FIRST (before other exit logic)
+    // This ensures we lock in profits or cut losses as soon as thresholds are hit
     for (const pos of currentPositions) {
       try {
         const ticker = await this.exchangeService.getTicker(pos.symbol);
@@ -233,18 +239,107 @@ export class StrategyService {
         const entryPrice = parseFloat(pos.entryPrice);
         const quantity = parseFloat(pos.quantity);
         
-        // Calculate unrealized profit
+        // Calculate position value and profit/loss
+        const positionValue = quantity * currentPrice;
+        const entryValue = quantity * entryPrice;
         const profit = quantity * (currentPrice - entryPrice);
+        const profitPct = (profit / entryValue) * 100;
         
-        if (profit >= minProfitUsd) {
-          this.logger.log(`[PROFIT EXIT] Closing position due to profit threshold`, {
+        // 1. Minimum position size check - skip if position is too small
+        if (positionValue < minPositionValueForExit) {
+          this.logger.debug(`Skipping exit check for small position`, {
+            symbol: pos.symbol,
+            positionValue: positionValue.toFixed(4),
+            minPositionValueForExit: minPositionValueForExit.toFixed(4),
+          });
+          continue;
+        }
+        
+        // 2. Calculate volatility-adjusted thresholds
+        // Get recent price volatility (24h return as proxy)
+        let volatilityMultiplier = 1.0;
+        try {
+          const ohlcv = await this.exchangeService.getOHLCV(pos.symbol, '24h', 2);
+          if (ohlcv.length >= 2) {
+            const price24hAgo = ohlcv[0].close;
+            const return24h = Math.abs((currentPrice - price24hAgo) / price24hAgo) * 100;
+            // If volatility is high (>10%), apply adjustment factor
+            if (return24h > 10) {
+              volatilityMultiplier = volatilityAdjustmentFactor;
+            }
+          }
+        } catch (volError: any) {
+          // If we can't get volatility, use default multiplier
+          this.logger.debug(`Could not calculate volatility for ${pos.symbol}, using default`, {
+            error: volError.message,
+          });
+        }
+        
+        // 3. Calculate thresholds (use percentage-based, fallback to USD for small positions)
+        // Profit threshold: use percentage of position value, ensure it covers fees + buffer
+        const krakenMakerFee = 0.0016; // 0.16% maker fee
+        const krakenTakerFee = 0.0026; // 0.26% taker fee (use worst case)
+        const totalFeesPct = (krakenTakerFee * 2) + (profitFeeBufferPct / 100); // Buy + sell fees + buffer
+        
+        const profitThresholdPct = Math.max(minProfitPct, totalFeesPct * 100);
+        const profitThresholdUsd = (entryValue * profitThresholdPct) / 100;
+        const effectiveProfitThreshold = Math.max(profitThresholdUsd, minProfitUsd);
+        
+        // Loss threshold: use percentage, adjusted for volatility
+        const lossThresholdPct = maxLossPct * volatilityMultiplier;
+        const lossThresholdUsd = (entryValue * lossThresholdPct) / 100;
+        const effectiveLossThreshold = Math.max(lossThresholdUsd, maxLossUsd);
+        
+        // 4. Check for profit exit (with fee awareness)
+        if ((minProfitPct > 0 || minProfitUsd > 0) && profit >= effectiveProfitThreshold) {
+          // Verify profit actually covers fees
+          const estimatedFees = entryValue * krakenTakerFee + positionValue * krakenTakerFee;
+          const netProfit = profit - estimatedFees;
+          
+          if (netProfit > 0 || profit >= effectiveProfitThreshold * 1.1) { // Allow 10% margin for fee estimation
+            this.logger.log(`[PROFIT EXIT] Closing position due to profit threshold`, {
+              symbol: pos.symbol,
+              entryPrice: entryPrice.toFixed(4),
+              currentPrice: currentPrice.toFixed(4),
+              quantity: quantity.toFixed(8),
+              profit: profit.toFixed(4),
+              profitPct: profitPct.toFixed(2),
+              netProfit: netProfit.toFixed(4),
+              effectiveProfitThreshold: effectiveProfitThreshold.toFixed(4),
+              profitThresholdPct: profitThresholdPct.toFixed(2),
+              estimatedFees: estimatedFees.toFixed(4),
+            });
+            
+            trades.push({
+              symbol: pos.symbol,
+              side: 'sell',
+              quantity: quantity,
+            });
+            
+            // Skip further checks for this position (already marked for exit)
+            continue;
+          } else {
+            this.logger.debug(`Profit threshold met but fees would exceed profit, holding`, {
+              symbol: pos.symbol,
+              profit: profit.toFixed(4),
+              estimatedFees: estimatedFees.toFixed(4),
+              netProfit: netProfit.toFixed(4),
+            });
+          }
+        }
+        
+        // 5. Check for stop-loss exit (with volatility adjustment)
+        if ((maxLossPct > 0 || maxLossUsd > 0) && profit <= -effectiveLossThreshold) {
+          this.logger.log(`[STOP-LOSS EXIT] Closing position due to loss threshold`, {
             symbol: pos.symbol,
             entryPrice: entryPrice.toFixed(4),
             currentPrice: currentPrice.toFixed(4),
             quantity: quantity.toFixed(8),
-            profit: profit.toFixed(4),
-            minProfitUsd: minProfitUsd.toFixed(4),
-            profitPct: ((profit / (quantity * entryPrice)) * 100).toFixed(2),
+            loss: Math.abs(profit).toFixed(4),
+            lossPct: Math.abs(profitPct).toFixed(2),
+            effectiveLossThreshold: effectiveLossThreshold.toFixed(4),
+            lossThresholdPct: lossThresholdPct.toFixed(2),
+            volatilityMultiplier: volatilityMultiplier.toFixed(2),
           });
           
           trades.push({
@@ -257,19 +352,19 @@ export class StrategyService {
           continue;
         }
       } catch (error: any) {
-        this.logger.warn(`Error checking profit threshold for position`, {
+        this.logger.warn(`Error checking profit/loss threshold for position`, {
           symbol: pos.symbol,
           error: error.message,
         });
-        // Continue to other exit logic if profit check fails
+        // Continue to other exit logic if profit/loss check fails
       }
     }
 
-    // Close positions not in target (but skip those already marked for profit exit)
-    const profitExitSymbols = new Set(trades.filter(t => t.side === 'sell').map(t => t.symbol));
+    // Close positions not in target (but skip those already marked for profit/loss exit)
+    const exitSymbols = new Set(trades.filter(t => t.side === 'sell').map(t => t.symbol));
     for (const pos of currentPositions) {
-      // Skip if already marked for profit exit
-      if (profitExitSymbols.has(pos.symbol)) {
+      // Skip if already marked for profit/loss exit
+      if (exitSymbols.has(pos.symbol)) {
         continue;
       }
       

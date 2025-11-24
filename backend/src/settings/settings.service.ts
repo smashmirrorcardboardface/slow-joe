@@ -19,6 +19,12 @@ export interface StrategySettings {
   emaLong: number;
   cooldownCycles: number;
   minProfitUsd: number;
+  maxLossUsd: number;
+  minProfitPct: number;
+  maxLossPct: number;
+  minPositionValueForExit: number;
+  profitFeeBufferPct: number;
+  volatilityAdjustmentFactor: number;
 }
 
 @Injectable()
@@ -36,7 +42,13 @@ export class SettingsService {
     EMA_SHORT: { value: '12', description: 'Short EMA period' },
     EMA_LONG: { value: '26', description: 'Long EMA period' },
     COOLDOWN_CYCLES: { value: '2', description: 'Number of cycles to wait before re-entering same asset' },
-    MIN_PROFIT_USD: { value: '0.15', description: 'Minimum profit in USD to trigger automatic position exit' },
+    MIN_PROFIT_USD: { value: '0.15', description: 'Minimum profit in USD (fallback for small positions)' },
+    MAX_LOSS_USD: { value: '0.15', description: 'Maximum loss in USD (fallback for small positions)' },
+    MIN_PROFIT_PCT: { value: '3', description: 'Minimum profit percentage to trigger exit (e.g., 3 = 3%)' },
+    MAX_LOSS_PCT: { value: '2', description: 'Maximum loss percentage to trigger stop-loss (e.g., 2 = 2%)' },
+    MIN_POSITION_VALUE_FOR_EXIT: { value: '5', description: 'Minimum position value in USD to apply profit/loss exits' },
+    PROFIT_FEE_BUFFER_PCT: { value: '0.5', description: 'Additional percentage buffer above fees for profit exits (e.g., 0.5 = 0.5%)' },
+    VOLATILITY_ADJUSTMENT_FACTOR: { value: '1.5', description: 'Multiplier for stop-loss in volatile markets (higher = wider stops)' },
   };
 
   constructor(
@@ -114,6 +126,12 @@ export class SettingsService {
     const emaLong = await this.getSettingInt('EMA_LONG');
     const cooldownCycles = await this.getSettingInt('COOLDOWN_CYCLES');
     const minProfitUsd = await this.getSettingNumber('MIN_PROFIT_USD');
+    const maxLossUsd = await this.getSettingNumber('MAX_LOSS_USD');
+    const minProfitPct = await this.getSettingNumber('MIN_PROFIT_PCT');
+    const maxLossPct = await this.getSettingNumber('MAX_LOSS_PCT');
+    const minPositionValueForExit = await this.getSettingNumber('MIN_POSITION_VALUE_FOR_EXIT');
+    const profitFeeBufferPct = await this.getSettingNumber('PROFIT_FEE_BUFFER_PCT');
+    const volatilityAdjustmentFactor = await this.getSettingNumber('VOLATILITY_ADJUSTMENT_FACTOR');
 
     return {
       universe,
@@ -129,6 +147,12 @@ export class SettingsService {
       emaLong,
       cooldownCycles,
       minProfitUsd,
+      maxLossUsd,
+      minProfitPct,
+      maxLossPct,
+      minPositionValueForExit,
+      profitFeeBufferPct,
+      volatilityAdjustmentFactor,
     };
   }
 
@@ -277,9 +301,27 @@ export class SettingsService {
       case 'MIN_ORDER_USD':
       case 'MIN_BALANCE_USD':
       case 'MIN_PROFIT_USD':
+      case 'MAX_LOSS_USD':
+      case 'MIN_POSITION_VALUE_FOR_EXIT':
         const minValue = parseFloat(value);
         if (isNaN(minValue) || minValue < 0) {
           throw new BadRequestException(`${key} must be a non-negative number`);
+        }
+        break;
+
+      case 'MIN_PROFIT_PCT':
+      case 'MAX_LOSS_PCT':
+      case 'PROFIT_FEE_BUFFER_PCT':
+        const pctValue = parseFloat(value);
+        if (isNaN(pctValue) || pctValue < 0 || pctValue > 100) {
+          throw new BadRequestException(`${key} must be between 0 and 100`);
+        }
+        break;
+
+      case 'VOLATILITY_ADJUSTMENT_FACTOR':
+        const factorValue = parseFloat(value);
+        if (isNaN(factorValue) || factorValue < 0.5 || factorValue > 5) {
+          throw new BadRequestException(`${key} must be between 0.5 and 5`);
         }
         break;
 
@@ -319,6 +361,12 @@ export class SettingsService {
       emaLong: 'EMA_LONG',
       cooldownCycles: 'COOLDOWN_CYCLES',
       minProfitUsd: 'MIN_PROFIT_USD',
+      maxLossUsd: 'MAX_LOSS_USD',
+      minProfitPct: 'MIN_PROFIT_PCT',
+      maxLossPct: 'MAX_LOSS_PCT',
+      minPositionValueForExit: 'MIN_POSITION_VALUE_FOR_EXIT',
+      profitFeeBufferPct: 'PROFIT_FEE_BUFFER_PCT',
+      volatilityAdjustmentFactor: 'VOLATILITY_ADJUSTMENT_FACTOR',
     };
     return mapping[key] || null;
   }
