@@ -40,7 +40,10 @@ export class JobsScheduler {
     return this.userrefPrefixCache;
   }
 
-  @Cron(CronExpression.EVERY_HOUR)
+  // Reconciliation runs every 30 minutes to keep data in sync
+  // With per-position evaluation, positions are checked at different times,
+  // so more frequent reconciliation ensures accurate state
+  @Cron('*/30 * * * *') // Every 30 minutes
   async handleReconcile() {
     await this.jobsService.enqueueReconcile();
   }
@@ -60,6 +63,25 @@ export class JobsScheduler {
     if (currentHour % cadenceHours === 0 && now.getMinutes() === 0) {
       this.logger.log(`Triggering signal poller`, { cadenceHours, currentHour });
       await this.jobsService.enqueueSignalPoller();
+    }
+  }
+
+  // Per-position evaluation checker - runs every 30 minutes to check if any positions are due
+  // Each position is evaluated on its own cycle based on when it was purchased
+  @Cron('*/30 * * * *') // Every 30 minutes
+  async handlePerPositionEvaluation() {
+    if (!this.strategyService.isEnabled()) {
+      return;
+    }
+
+    try {
+      // Trigger strategy evaluation - it will internally check which positions are due
+      this.logger.debug(`Checking for positions due for evaluation (per-position cycle)`);
+      await this.jobsService.enqueueStrategyEvaluate();
+    } catch (error: any) {
+      this.logger.error('Error in per-position evaluation check', error.stack, {
+        error: error.message,
+      });
     }
   }
 

@@ -10,7 +10,7 @@ import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
 import { RealtimeService } from '../../realtime/realtime.service';
 import { SettingsService } from '../../settings/settings.service';
-import { getBotId } from '../../common/utils/bot.utils';
+import { getBotId, getUserrefPrefix, orderBelongsToBot } from '../../common/utils/bot.utils';
 
 @Processor('reconcile')
 @Injectable()
@@ -37,6 +37,10 @@ export class ReconcileProcessor extends WorkerHost {
       this.botIdCache = getBotId(this.configService);
     }
     return this.botIdCache;
+  }
+
+  private getUserrefPrefixValue(): string {
+    return getUserrefPrefix(this.configService);
   }
 
   async process(job: Job) {
@@ -344,10 +348,29 @@ export class ReconcileProcessor extends WorkerHost {
       
       // Check for positions in database that don't exist on exchange (should be closed)
       // BUT skip positions we just created in this same reconciliation run
+      // Also skip positions that have pending sell orders (they're being sold, so balance will be zero)
+      const userrefPrefix = this.getUserrefPrefixValue();
+      const openOrders = (await this.exchangeService.getOpenOrders())
+        .filter(order => orderBelongsToBot(order, userrefPrefix));
+      const pendingSellSymbols = new Set(
+        openOrders
+          .filter(order => order.side === 'sell')
+          .map(order => order.symbol)
+      );
+      
       for (const dbPos of dbPositions) {
         // Skip if we're about to create this position (or just created it)
         if (symbolsToCreate.has(dbPos.symbol)) {
           this.logger.debug(`Skipping close check for ${dbPos.symbol} - position being created in this run`, {
+            jobId,
+            symbol: dbPos.symbol,
+          });
+          continue;
+        }
+        
+        // Skip if there's a pending sell order for this position (it's being sold, so balance will be zero)
+        if (pendingSellSymbols.has(dbPos.symbol)) {
+          this.logger.debug(`Skipping close check for ${dbPos.symbol} - pending sell order exists`, {
             jobId,
             symbol: dbPos.symbol,
           });

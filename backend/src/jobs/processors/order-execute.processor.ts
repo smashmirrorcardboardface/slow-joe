@@ -77,8 +77,23 @@ export class OrderExecuteProcessor extends WorkerHost {
         throw new Error(`Invalid quantity after rounding: ${roundedQuantity} (original: ${quantity})`);
       }
 
-      // For sell orders, verify we have enough asset balance before placing order
+      // For sell orders, verify the position still exists before attempting to sell
       if (side === 'sell') {
+        // Check if position still exists (it might have been closed by reconciliation)
+        const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
+        const openPositions = positions.filter(p => p.status === 'open');
+        
+        if (openPositions.length === 0) {
+          this.logger.warn(`[SELL ORDER SKIPPED] Position no longer exists - may have been closed by reconciliation or already sold`, {
+            jobId: job.id,
+            symbol,
+            side,
+            quantity,
+          });
+          // Position doesn't exist, so there's nothing to sell - skip gracefully
+          return;
+        }
+        
         // Extract base currency from symbol (e.g., "ADA-USD" -> "ADA")
         const baseCurrency = symbol.split('-')[0];
         
@@ -272,6 +287,16 @@ export class OrderExecuteProcessor extends WorkerHost {
               await this.positionsService.closePosition(pos.id);
             }
           }
+          
+          // After successful sell, trigger strategy evaluation to check for buy opportunities
+          // Cash is now available from the sale, so we can immediately look for new positions
+          this.logger.log(`Sell order filled - triggering strategy evaluation for buy opportunities`, {
+            jobId: job.id,
+            symbol,
+            filledQuantity: orderStatus.filledQuantity,
+            filledPrice: orderStatus.filledPrice,
+          });
+          await this.jobsService.enqueueStrategyEvaluate();
         }
 
         this.logger.log(`Order filled successfully`, {
@@ -332,6 +357,15 @@ export class OrderExecuteProcessor extends WorkerHost {
                   await this.positionsService.closePosition(pos.id);
                 }
               }
+              
+              // After successful sell, trigger strategy evaluation to check for buy opportunities
+              this.logger.log(`Sell order filled during cancellation check - triggering strategy evaluation for buy opportunities`, {
+                jobId: job.id,
+                symbol,
+                filledQuantity: finalStatus.filledQuantity,
+                filledPrice: finalStatus.filledPrice,
+              });
+              await this.jobsService.enqueueStrategyEvaluate();
             }
             this.logger.log(`Order was filled during cancellation check`, {
               jobId: job.id,
@@ -411,6 +445,15 @@ export class OrderExecuteProcessor extends WorkerHost {
                 await this.positionsService.closePosition(pos.id);
               }
             }
+            
+            // After successful sell via market order, trigger strategy evaluation to check for buy opportunities
+            this.logger.log(`Sell order filled via market order - triggering strategy evaluation for buy opportunities`, {
+              jobId: job.id,
+              symbol,
+              filledQuantity: marketOrderStatus.filledQuantity,
+              filledPrice: marketOrderStatus.filledPrice,
+            });
+            await this.jobsService.enqueueStrategyEvaluate();
           }
 
           this.logger.log(`Market order filled`, {

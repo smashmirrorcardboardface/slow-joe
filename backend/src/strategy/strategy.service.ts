@@ -115,8 +115,8 @@ export class StrategyService {
     return { ema12, ema26, rsi, score };
   }
 
-  async calculateSize(navUsd: number, priceUsd: number, symbol: string): Promise<number> {
-    const maxAllocFraction = await this.settingsService.getSettingNumber('MAX_ALLOC_FRACTION');
+  async calculateSize(navUsd: number, priceUsd: number, symbol: string, allocFraction?: number): Promise<number> {
+    const maxAllocFraction = allocFraction || await this.settingsService.getSettingNumber('MAX_ALLOC_FRACTION');
     const minOrderUsd = await this.settingsService.getSettingNumber('MIN_ORDER_USD');
 
     const alloc = navUsd * maxAllocFraction;
@@ -152,6 +152,51 @@ export class StrategyService {
     return roundedQty;
   }
 
+  /**
+   * Get positions that are due for evaluation based on their purchase time
+   * Each position is evaluated on its own cycle starting from when it was opened
+   */
+  private async getPositionsDueForEvaluation(): Promise<Array<{ position: any; cyclesSinceOpen: number; nextEvaluationTime: Date }>> {
+    const botId = this.getBotIdValue();
+    const currentPositions = await this.positionsService.findOpenByBot(botId);
+    const cadenceHours = await this.settingsService.getSettingInt('CADENCE_HOURS');
+    const now = new Date();
+    const duePositions: Array<{ position: any; cyclesSinceOpen: number; nextEvaluationTime: Date }> = [];
+
+    for (const pos of currentPositions) {
+      const openedAt = pos.openedAt;
+      const ageMs = now.getTime() - openedAt.getTime();
+      const ageHours = ageMs / (1000 * 60 * 60);
+      
+      // Calculate how many full cadence cycles have passed
+      const cyclesSinceOpen = Math.floor(ageHours / cadenceHours);
+      
+      // If no cycles have passed yet, position is too new (less than 1 cadence cycle old)
+      if (cyclesSinceOpen < 1) {
+        continue;
+      }
+      
+      // Calculate when the last completed cycle's evaluation should have happened
+      // If cyclesSinceOpen = 2, cycles 1 and 2 are complete, so check if we're past cycle 2's evaluation time
+      const lastCompletedCycleEvaluationTime = new Date(openedAt.getTime() + (cyclesSinceOpen * cadenceHours * 60 * 60 * 1000));
+      
+      // Calculate when the next evaluation should happen (for logging)
+      const nextEvaluationTime = new Date(openedAt.getTime() + ((cyclesSinceOpen + 1) * cadenceHours * 60 * 60 * 1000));
+      
+      // Position is due if we're past the last completed cycle's evaluation time
+      // Allow evaluation from the exact evaluation time onwards (no upper limit, so we don't miss evaluations)
+      if (now.getTime() >= lastCompletedCycleEvaluationTime.getTime()) {
+        duePositions.push({
+          position: pos,
+          cyclesSinceOpen,
+          nextEvaluationTime,
+        });
+      }
+    }
+
+    return duePositions;
+  }
+
   async evaluate(): Promise<TradeDecision[]> {
     if (!this.enabled) {
       this.logger.debug('Strategy is disabled');
@@ -174,6 +219,18 @@ export class StrategyService {
     const cadenceHours = await this.settingsService.getSettingInt('CADENCE_HOURS');
     const interval = `${cadenceHours}h`;
     const cooldownCycles = await this.settingsService.getSettingInt('COOLDOWN_CYCLES');
+    
+    // Get positions that are due for evaluation
+    const duePositions = await this.getPositionsDueForEvaluation();
+    const duePositionSymbols = new Set(duePositions.map(dp => dp.position.symbol));
+    
+    this.logger.log(`Per-position evaluation: ${duePositions.length} position(s) due for evaluation`, {
+      duePositions: duePositions.map(dp => ({
+        symbol: dp.position.symbol,
+        cyclesSinceOpen: dp.cyclesSinceOpen,
+        nextEvaluationTime: dp.nextEvaluationTime.toISOString(),
+      })),
+    });
 
     const rsiLow = await this.settingsService.getSettingNumber('RSI_LOW');
     const rsiHigh = await this.settingsService.getSettingNumber('RSI_HIGH');
@@ -310,21 +367,72 @@ export class StrategyService {
     const botId = this.getBotIdValue();
     const userrefPrefix = this.getUserrefPrefixValue();
 
-    // Rank by score
-    signals.sort((a, b) => b.indicators.score - a.indicators.score);
-
-    // Get current positions first (needed for calculating available slots)
+    // Get current positions first (needed for calculating available slots and adjusting scores)
     const currentPositions = await this.positionsService.findOpenByBot(botId);
     const currentPositionCount = currentPositions.length;
+    
+    // Create a map of current positions with their P&L for score adjustment
+    const positionPnLMap = new Map<string, { profit: number; profitPct: number }>();
+    for (const pos of currentPositions) {
+      try {
+        const ticker = await this.exchangeService.getTicker(pos.symbol);
+        const currentPrice = ticker.bid || ticker.price;
+        const entryPrice = parseFloat(pos.entryPrice);
+        const quantity = parseFloat(pos.quantity);
+        const entryValue = quantity * entryPrice;
+        const positionValue = quantity * currentPrice;
+        const profit = positionValue - entryValue;
+        const profitPct = (profit / entryValue) * 100;
+        
+        positionPnLMap.set(pos.symbol, { profit, profitPct });
+      } catch (error: any) {
+        // If we can't get ticker, skip P&L adjustment for this position
+        this.logger.debug(`Could not get P&L for position ${pos.symbol}`, {
+          error: error.message,
+        });
+      }
+    }
+    
+    // Adjust signal scores based on current position performance
+    // Penalize positions we're holding that are losing money
+    for (const signal of signals) {
+      const positionPnL = positionPnLMap.get(signal.symbol);
+      if (positionPnL) {
+        // If we're holding this position and it's losing money, penalize the score
+        // This ensures we don't rank losing positions as "best signals"
+        if (positionPnL.profitPct < -0.5) { // Losing more than 0.5%
+          // Penalize based on loss severity: 
+          // -0.5% loss = 15% score reduction
+          // -1% loss = 30% score reduction
+          // -2% loss = 50% score reduction (capped)
+          const lossMagnitude = Math.abs(positionPnL.profitPct);
+          const penaltyPct = Math.min(lossMagnitude * 30, 50); // 30% per 1% loss, cap at 50%
+          const penaltyFactor = 1.0 - (penaltyPct / 100);
+          const originalScore = signal.indicators.score;
+          signal.indicators.score *= penaltyFactor;
+          this.logger.debug(`Adjusted signal score for losing position`, {
+            symbol: signal.symbol,
+            originalScore: originalScore.toFixed(3),
+            adjustedScore: signal.indicators.score.toFixed(3),
+            profitPct: positionPnL.profitPct.toFixed(2),
+            penaltyPct: penaltyPct.toFixed(1),
+            penaltyFactor: penaltyFactor.toFixed(3),
+          });
+        }
+      }
+    }
+
+    // Rank by adjusted score
+    signals.sort((a, b) => b.indicators.score - a.indicators.score);
 
     // Get top K assets based on MAX_POSITIONS setting
     const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
     
     // Calculate how many new positions we can open
-    const availableSlots = Math.max(0, maxPositions - currentPositionCount);
+    let availableSlots = Math.max(0, maxPositions - currentPositionCount);
     const topK = Math.min(availableSlots, signals.length);
     
-    const targetAssets = signals.slice(0, topK).map((s) => s.symbol);
+    let targetAssets = signals.slice(0, topK).map((s) => s.symbol);
     
     const topSignals = signals.slice(0, Math.min(5, signals.length)).map(s => `${s.symbol} (score: ${s.indicators.score.toFixed(3)})`).join(', ');
     this.logger.log(`Position selection: maxPositions=${maxPositions}, current=${currentPositionCount}, availableSlots=${availableSlots}, topK=${topK}, targetAssets=[${targetAssets.join(', ')}], topSignals=[${topSignals}]`, {
@@ -382,7 +490,16 @@ export class StrategyService {
 
     // Check for profit/loss threshold exits FIRST (before other exit logic)
     // This ensures we lock in profits or cut losses as soon as thresholds are hit
+    // Only check positions that are due for evaluation (per-position evaluation cycle)
     for (const pos of currentPositions) {
+      // Skip if position is not due for evaluation (per-position evaluation cycle)
+      if (!duePositionSymbols.has(pos.symbol)) {
+        this.logger.debug(`Skipping profit/loss check - position not due for evaluation`, {
+          symbol: pos.symbol,
+        });
+        continue;
+      }
+      
       try {
         // Skip if there's already a pending sell order for this symbol
         if (pendingSellSymbols.has(pos.symbol)) {
@@ -476,6 +593,8 @@ export class StrategyService {
               side: 'sell',
               quantity: quantity,
             });
+            // Set cooldown to prevent immediate re-entry after selling
+            this.cooldownMap.set(pos.symbol, cooldownCycles);
             
             // Skip further checks for this position (already marked for exit)
             continue;
@@ -508,6 +627,8 @@ export class StrategyService {
             side: 'sell',
             quantity: quantity,
           });
+          // Set cooldown to prevent immediate re-entry after selling
+          this.cooldownMap.set(pos.symbol, cooldownCycles);
           
           // Skip further checks for this position (already marked for exit)
           continue;
@@ -521,12 +642,167 @@ export class StrategyService {
       }
     }
 
-    // Close positions not in target (but skip those already marked for profit/loss exit)
-    // IMPORTANT: Only exit if we can do so profitably (or at minimal loss)
+    // ROTATION LOGIC: Exit underperforming positions to rotate to better signals
+    // After minimum hold period, if position is not in top 4-5 and better signals are available, rotate
+    // Only check positions that are due for evaluation (per-position evaluation cycle)
     const exitSymbols = new Set(trades.filter(t => t.side === 'sell').map(t => t.symbol));
+    const top4Signals = signals.slice(0, 4).map(s => s.symbol);
+    const top5Signals = signals.slice(0, 5).map(s => s.symbol);
+    
+    // Create a map of symbol to score for quick lookup
+    const signalScoreMap = new Map<string, number>();
+    signals.forEach(s => signalScoreMap.set(s.symbol, s.indicators.score));
+    
     for (const pos of currentPositions) {
-      // Skip if already marked for profit/loss exit
+      // Skip if already marked for exit
       if (exitSymbols.has(pos.symbol)) {
+        continue;
+      }
+      
+      // Skip if position is not due for evaluation (per-position evaluation cycle)
+      if (!duePositionSymbols.has(pos.symbol)) {
+        this.logger.debug(`Skipping rotation check - position not due for evaluation`, {
+          symbol: pos.symbol,
+        });
+        continue;
+      }
+      
+      // Check if position has been held for minimum period
+      // Since we only check positions that are "due for evaluation" (already passed at least 1 cadence cycle),
+      // we can use a shorter minimum hold period for rotation (1 cadence cycle instead of 2)
+      const positionAgeMs = Date.now() - pos.openedAt.getTime();
+      const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
+      const minHoldCycles = 1; // Minimum 1 cadence cycle before rotation (positions are already due for evaluation)
+      const minHoldHours = cadenceHours * minHoldCycles;
+      
+      // Only consider rotation if position has been held for minimum period
+      if (positionAgeHours >= minHoldHours) {
+        const positionScore = signalScoreMap.get(pos.symbol) || 0;
+        const isInTop5 = top5Signals.includes(pos.symbol);
+        const isInTop4 = top4Signals.includes(pos.symbol);
+        
+        this.logger.debug(`[ROTATION CHECK] Position eligible for rotation check`, {
+          symbol: pos.symbol,
+          positionAgeHours: positionAgeHours.toFixed(2),
+          minHoldHours: minHoldHours.toFixed(2),
+          positionScore: positionScore.toFixed(3),
+          isInTop5,
+          isInTop4,
+          top5Signals,
+          top4Signals,
+        });
+        
+        // If position is not in top 5 and there are better signals available (top 4)
+        if (!isInTop5 && top4Signals.length > 0) {
+          // Find the worst top 4 signal that we're not holding
+          const worstTop4Signal = top4Signals[top4Signals.length - 1];
+          const worstTop4Score = signalScoreMap.get(worstTop4Signal) || 0;
+          
+          // Only rotate if current position score is significantly worse than worst top 4
+          // This prevents unnecessary rotation when scores are close
+          const scoreDiff = worstTop4Score - positionScore;
+          this.logger.debug(`[ROTATION CHECK] Score comparison`, {
+            symbol: pos.symbol,
+            positionScore: positionScore.toFixed(3),
+            worstTop4Signal,
+            worstTop4Score: worstTop4Score.toFixed(3),
+            scoreDiff: scoreDiff.toFixed(3),
+            threshold: 0.05,
+            willRotate: scoreDiff > 0.05,
+          });
+          if (scoreDiff > 0.05) { // At least 0.05 score difference
+            try {
+              const ticker = await this.exchangeService.getTicker(pos.symbol);
+              const currentPrice = ticker.bid || ticker.price;
+              const entryPrice = parseFloat(pos.entryPrice);
+              const quantity = parseFloat(pos.quantity);
+              const entryValue = quantity * entryPrice;
+              const positionValue = quantity * currentPrice;
+              
+              const grossProfit = positionValue - entryValue;
+              const krakenTakerFee = 0.0026;
+              const estimatedFees = entryValue * krakenTakerFee + positionValue * krakenTakerFee;
+              const netProfit = grossProfit - estimatedFees;
+              const maxAcceptableLoss = entryValue * 0.015; // 1.5% max loss for rotation
+              
+              // Only rotate if we can exit profitably or at minimal loss
+              this.logger.debug(`[ROTATION CHECK] Cost analysis`, {
+                symbol: pos.symbol,
+                entryPrice: entryPrice.toFixed(4),
+                currentPrice: currentPrice.toFixed(4),
+                grossProfit: grossProfit.toFixed(4),
+                estimatedFees: estimatedFees.toFixed(4),
+                netProfit: netProfit.toFixed(4),
+                maxAcceptableLoss: maxAcceptableLoss.toFixed(4),
+                willRotate: netProfit > 0 || (netProfit >= -maxAcceptableLoss && grossProfit > -maxAcceptableLoss),
+              });
+              if (netProfit > 0 || (netProfit >= -maxAcceptableLoss && grossProfit > -maxAcceptableLoss)) {
+                this.logger.log(`[ROTATION] Exiting underperforming position to rotate to better signal`, {
+                  symbol: pos.symbol,
+                  positionScore: positionScore.toFixed(3),
+                  worstTop4Signal,
+                  worstTop4Score: worstTop4Score.toFixed(3),
+                  scoreDiff: scoreDiff.toFixed(3),
+                  positionAgeHours: positionAgeHours.toFixed(2),
+                  netProfit: netProfit.toFixed(4),
+                });
+                
+                trades.push({
+                  symbol: pos.symbol,
+                  side: 'sell',
+                  quantity: parseFloat(pos.quantity),
+                });
+                // Set cooldown to prevent immediate re-entry after selling
+                this.cooldownMap.set(pos.symbol, cooldownCycles);
+                exitSymbols.add(pos.symbol);
+                continue; // Skip to next position
+              } else {
+                this.logger.debug(`[ROTATION SKIPPED] Position underperforming but exit would be too costly`, {
+                  symbol: pos.symbol,
+                  positionScore: positionScore.toFixed(3),
+                  worstTop4Score: worstTop4Score.toFixed(3),
+                  netProfit: netProfit.toFixed(4),
+                  maxAcceptableLoss: maxAcceptableLoss.toFixed(4),
+                });
+              }
+            } catch (error: any) {
+              this.logger.warn(`[ROTATION SKIPPED] Could not evaluate rotation for position`, {
+                symbol: pos.symbol,
+                error: error.message,
+              });
+            }
+          }
+        } else {
+          this.logger.debug(`[ROTATION SKIPPED] Position not in top 5 but no better signals available or score difference too small`, {
+            symbol: pos.symbol,
+            positionScore: positionScore.toFixed(3),
+            isInTop5,
+            top5Signals,
+          });
+        }
+      } else {
+        this.logger.debug(`[ROTATION SKIPPED] Position too new for rotation`, {
+          symbol: pos.symbol,
+          positionAgeHours: positionAgeHours.toFixed(2),
+          minHoldHours: minHoldHours.toFixed(2),
+        });
+      }
+    }
+    
+    // Close positions not in target (but skip those already marked for exit)
+    // IMPORTANT: Only exit if we can do so profitably (or at minimal loss)
+    // Only check positions that are due for evaluation (per-position evaluation cycle)
+    for (const pos of currentPositions) {
+      // Skip if already marked for exit
+      if (exitSymbols.has(pos.symbol)) {
+        continue;
+      }
+      
+      // Skip if position is not due for evaluation (per-position evaluation cycle)
+      if (!duePositionSymbols.has(pos.symbol)) {
+        this.logger.debug(`Skipping target exit check - position not due for evaluation`, {
+          symbol: pos.symbol,
+        });
         continue;
       }
       
@@ -537,6 +813,7 @@ export class StrategyService {
         // 2. OR we can exit profitably (lock in gains)
         // 3. OR loss is minimal (cut losses early, but only after minimum hold period)
         
+        // Reuse position age calculation from rotation check above
         const positionAgeMs = Date.now() - pos.openedAt.getTime();
         const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
         const minHoldCycles = 2; // Minimum 2 cadence cycles before "not in target" exit
@@ -595,6 +872,8 @@ export class StrategyService {
               side: 'sell',
               quantity: parseFloat(pos.quantity),
             });
+            // Set cooldown to prevent immediate re-entry after selling
+            this.cooldownMap.set(pos.symbol, cooldownCycles);
           } else {
             this.logger.debug(`[TARGET EXIT SKIPPED] Position not in target but exit would be too costly`, {
               symbol: pos.symbol,
@@ -615,6 +894,35 @@ export class StrategyService {
           });
         }
       }
+    }
+
+    // Recalculate available slots and target assets after exits
+    // This ensures we can buy into better signals when we rotate out of underperforming positions
+    const exitCount = trades.filter(t => t.side === 'sell').length;
+    if (exitCount > 0) {
+      const newAvailableSlots = Math.max(0, maxPositions - (currentPositionCount - exitCount));
+      const newTopK = Math.min(newAvailableSlots, signals.length);
+      const newTargetAssets = signals.slice(0, newTopK).map((s) => s.symbol);
+      
+      // Update targetAssets to include signals we want to rotate into
+      // Add any top 4 signals that we're not already holding and not already in targetAssets
+      for (const topSignal of top4Signals) {
+        if (!currentHoldings.has(topSignal) && !newTargetAssets.includes(topSignal) && newTargetAssets.length < maxPositions) {
+          newTargetAssets.push(topSignal);
+        }
+      }
+      
+      targetAssets = newTargetAssets;
+      // Update availableSlots to reflect the new count after exits
+      availableSlots = newAvailableSlots;
+      
+      this.logger.log(`Recalculated targets after ${exitCount} exit(s): availableSlots=${newAvailableSlots}, targetAssets=[${targetAssets.join(', ')}]`, {
+        exitCount,
+        newAvailableSlots,
+        newTopK,
+        targetAssets,
+        top4Signals,
+      });
     }
 
     // Get actual free USD balance from exchange (more accurate than calculating from NAV)
@@ -678,6 +986,20 @@ export class StrategyService {
     // Track allocated cash for new positions we're about to open
     let allocatedCash = 0;
 
+    // Check if we've queued sell orders in this evaluation cycle
+    // If so, wait for them to fill before buying new positions (cash will be available after fills)
+    const pendingSellsInThisCycle = trades.filter(t => t.side === 'sell').length;
+    if (pendingSellsInThisCycle > 0) {
+      this.logger.log(`Deferring buy orders - waiting for ${pendingSellsInThisCycle} sell order(s) to fill before buying new positions`, {
+        pendingSells: pendingSellsInThisCycle,
+        sellSymbols: trades.filter(t => t.side === 'sell').map(t => t.symbol),
+        targetAssets,
+        reason: 'Cash will be available after sell orders fill',
+      });
+      // Return trades (sells only, no buys) - buys will happen in next evaluation cycle
+      return trades;
+    }
+
     // Open new positions (check cooldown and available cash)
     for (const symbol of targetAssets) {
       if (!currentHoldings.has(symbol)) {
@@ -707,13 +1029,84 @@ export class StrategyService {
         // Get settings to check why calculateSize might return 0
         const maxAllocFraction = await this.settingsService.getSettingNumber('MAX_ALLOC_FRACTION');
         const minOrderUsd = await this.settingsService.getSettingNumber('MIN_ORDER_USD');
-        const alloc = remainingCash * maxAllocFraction;
         
-        const quantity = await this.calculateSize(remainingCash, ticker.price, symbol);
+        // Count remaining slots to fill
+        // Count how many buy trades we've already added in this evaluation
+        const buyTradesAdded = trades.filter(t => t.side === 'buy').length;
+        // Calculate how many slots we're still trying to fill
+        // This is: availableSlots - buyTradesAdded (including current symbol we're processing)
+        const remainingSlots = Math.max(1, availableSlots - buyTradesAdded);
+        
+        // Get lot size info to check minimum order requirements
+        const lotInfo = await this.exchangeService.getLotSizeInfo(symbol);
+        const minOrderSizeUsd = Math.max(lotInfo.minOrderSize * ticker.price, minOrderUsd);
+        
+        // Adjust allocation fraction based on remaining slots
+        // If multiple slots remain, use a larger fraction to ensure each position meets minimums
+        let effectiveAllocFraction = maxAllocFraction;
+        if (remainingSlots > 1) {
+          // Use larger fraction when multiple slots: 0.35 -> 0.50 for 2 slots, 0.60 for 3 slots
+          // This ensures each position gets enough cash to meet minimum order sizes
+          effectiveAllocFraction = Math.min(maxAllocFraction * (1 + (remainingSlots - 1) * 0.3), 0.90);
+          this.logger.debug(`Using adjusted allocation fraction for multiple slots`, {
+            symbol,
+            availableSlots,
+            buyTradesAdded,
+            remainingSlots,
+            maxAllocFraction,
+            effectiveAllocFraction: effectiveAllocFraction.toFixed(3),
+          });
+        }
+        
+        // Calculate initial allocation
+        let alloc = remainingCash * effectiveAllocFraction;
+        
+        // Determine maximum allocation cap based on remaining slots
+        // When multiple slots are available, we can be more aggressive with the first position
+        // to ensure it meets minimum order sizes
+        let maxAllocCap = 0.80; // Default: 80% cap
+        if (remainingSlots > 1) {
+          // More aggressive cap when multiple slots: 90% for 2 slots, 95% for 3+ slots
+          maxAllocCap = Math.min(0.80 + (remainingSlots - 1) * 0.10, 0.95);
+        }
+        
+        // If allocation is less than minimum order size, try to increase it to meet the minimum
+        // Use a more aggressive cap when multiple slots are available
+        if (alloc < minOrderSizeUsd) {
+          const minRequiredFraction = minOrderSizeUsd / remainingCash;
+          
+          // Check if we can meet the minimum even with maximum allocation
+          if (remainingCash * maxAllocCap >= minOrderSizeUsd) {
+            // We have enough cash to meet minimum, boost allocation
+            effectiveAllocFraction = Math.min(minRequiredFraction * 1.05, maxAllocCap); // Add 5% buffer, cap at maxAllocCap
+            alloc = remainingCash * effectiveAllocFraction;
+            this.logger.debug(`Increased allocation to meet minimum order size`, {
+              symbol,
+              minOrderSizeUsd: minOrderSizeUsd.toFixed(2),
+              originalAlloc: (remainingCash * maxAllocFraction).toFixed(2),
+              adjustedAlloc: alloc.toFixed(2),
+              effectiveAllocFraction: effectiveAllocFraction.toFixed(3),
+              maxAllocCap: maxAllocCap.toFixed(2),
+              remainingSlots,
+            });
+          } else {
+            // Even maximum allocation isn't enough - log and let calculateSize return 0
+            this.logger.debug(`Cannot meet minimum order size even with maximum allocation`, {
+              symbol,
+              minOrderSizeUsd: minOrderSizeUsd.toFixed(2),
+              maxPossibleAlloc: (remainingCash * maxAllocCap).toFixed(2),
+              remainingCash: remainingCash.toFixed(2),
+              maxAllocCap: maxAllocCap.toFixed(2),
+              remainingSlots,
+            });
+          }
+        }
+        
+        // Use the adjusted fraction for size calculation
+        const quantity = await this.calculateSize(remainingCash, ticker.price, symbol, effectiveAllocFraction);
         
         // Log detailed calculation for debugging
         if (quantity === 0) {
-          const lotInfo = await this.exchangeService.getLotSizeInfo(symbol);
           const calculatedQty = alloc / ticker.price;
           const roundedQty = await this.exchangeService.roundToLotSize(symbol, calculatedQty);
           const orderValueUsd = roundedQty * ticker.price;
@@ -723,6 +1116,8 @@ export class StrategyService {
             remainingCash: remainingCash.toFixed(4),
             price: ticker.price.toFixed(4),
             maxAllocFraction,
+            effectiveAllocFraction: effectiveAllocFraction.toFixed(3),
+            remainingSlots,
             alloc: alloc.toFixed(4),
             minOrderUsd,
             minOrderSize: lotInfo.minOrderSize,
@@ -762,8 +1157,8 @@ export class StrategyService {
           allocatedCash += orderValue;
           
           trades.push({ symbol, side: 'buy', quantity });
-          // Set cooldown for this symbol
-          this.cooldownMap.set(symbol, cooldownCycles);
+          // Note: Cooldown is set when positions are EXITED (sold), not when entered (bought)
+          // This prevents immediate re-entry after selling, but allows buying new positions
           this.logger.log(`Added buy trade`, {
             symbol,
             quantity: quantity.toFixed(8),
@@ -773,6 +1168,8 @@ export class StrategyService {
             feeBuffer: feeBuffer.toFixed(4),
             allocatedCash: allocatedCash.toFixed(4),
             availableCash: availableCash.toFixed(4),
+            effectiveAllocFraction: effectiveAllocFraction.toFixed(3),
+            remainingSlots,
             cooldownCycles,
           });
         } else {
