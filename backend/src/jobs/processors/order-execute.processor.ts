@@ -8,6 +8,7 @@ import { PositionsService } from '../../positions/positions.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
+import { JobsService } from '../jobs.service';
 
 @Processor('order-execute')
 @Injectable()
@@ -20,6 +21,7 @@ export class OrderExecuteProcessor extends WorkerHost {
     private metricsService: MetricsService,
     private logger: LoggerService,
     private alertsService: AlertsService,
+    private jobsService: JobsService,
   ) {
     super();
     this.logger.setContext('OrderExecuteProcessor');
@@ -99,9 +101,49 @@ export class OrderExecuteProcessor extends WorkerHost {
                   requestedQuantity: roundedQuantity.toFixed(8),
                   originalQuantity: quantity.toFixed(8),
                 });
+                
+                // If exchange has no balance but database thinks we have a position, close the phantom position
+                if (freeBalance < 0.0001 && positionQuantity > 0.0001) {
+                  this.logger.warn(`Closing phantom position(s) for ${symbol} - exchange has no balance`, {
+                    jobId: job.id,
+                    symbol,
+                    positionQuantity: positionQuantity.toFixed(8),
+                    freeBalance: freeBalance.toFixed(8),
+                  });
+                  
+                  // Close all open positions for this symbol
+                  for (const pos of openPositions) {
+                    await this.positionsService.closePosition(pos.id);
+                    this.logger.log(`Closed phantom position`, {
+                      jobId: job.id,
+                      symbol,
+                      positionId: pos.id,
+                      quantity: pos.quantity,
+                    });
+                  }
+                  
+                  // Trigger reconciliation to sync everything
+                  await this.jobsService.enqueueReconcile();
+                  this.logger.log(`Enqueued reconciliation job to sync database with exchange`, {
+                    jobId: job.id,
+                    symbol,
+                  });
+                  
+                  // Skip this sell order - there's nothing to sell
+                  this.logger.log(`Skipping sell order for ${symbol} - position already closed`, {
+                    jobId: job.id,
+                    symbol,
+                  });
+                  return; // Exit successfully - we've handled the mismatch
+                }
               }
             } catch (posError: any) {
-              // Ignore position lookup errors
+              // Ignore position lookup errors, but still throw the balance error
+              this.logger.warn(`Error checking positions during balance mismatch`, {
+                jobId: job.id,
+                symbol,
+                error: posError.message,
+              });
             }
             
             throw new Error(errorMsg);

@@ -222,11 +222,14 @@ export class JobsScheduler {
           }
 
           const ticker = await this.exchangeService.getTicker(pos.symbol);
-          const currentPrice = ticker.price;
+          // Use bid price for sell orders (what we'd actually get when selling)
+          // This gives a more realistic profit calculation
+          const currentPrice = ticker.bid || ticker.price;
           const entryPrice = parseFloat(pos.entryPrice);
           const quantity = parseFloat(pos.quantity);
           
           // Calculate position value and profit/loss
+          // Use bid price for position value since that's what we'd get when selling
           const positionValue = quantity * currentPrice;
           const entryValue = quantity * entryPrice;
           const profit = quantity * (currentPrice - entryPrice);

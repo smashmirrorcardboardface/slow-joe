@@ -17,7 +17,7 @@ export const typeOrmConfig = (): TypeOrmModuleOptions => {
       url: databaseUrl,
       entities: [Asset, Signal, Position, Trade, Metric, OHLCV, Alert, Setting],
       synchronize: process.env.NODE_ENV === 'development',
-      logging: process.env.NODE_ENV === 'development',
+      logging: false, // Disable verbose query logging
     };
   }
 
@@ -30,7 +30,7 @@ export const typeOrmConfig = (): TypeOrmModuleOptions => {
     database: process.env.DB_DATABASE || 'rotationbot',
     entities: [Asset, Signal, Position, Trade, Metric, OHLCV, Alert],
     synchronize: process.env.NODE_ENV === 'development',
-    logging: process.env.NODE_ENV === 'development',
+    logging: false, // Disable verbose query logging
   };
 };
 

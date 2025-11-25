@@ -59,12 +59,41 @@ export class StrategyService {
     const ema26 = ema26Values[ema26Values.length - 1];
     const rsi = rsiValues[rsiValues.length - 1] ?? 50;
 
-    // Score prioritizes EMA trend strength (ema12/ema26 ratio)
-    // RSI is already filtered by entry criteria, so we use it as a secondary factor
-    // Reward RSI values in the 45-55 range (sweet spot for momentum) with a small boost
+    // Score formula based on actual performance analysis:
+    // - Wins have RSI 55-65 (avg 56.22), losses have RSI 45-65 (avg 54.81)
+    // - Wins have EMA ratio ~1.0013, losses have EMA ratio ~1.0045
+    // - Key insight: Moderate EMA separation (1.001-1.002) with RSI 55-65 performs best
+    //   Very high EMA ratios (1.004+) may indicate overextension and reversals
     const emaRatio = ema12 / ema26;
-    const rsiBonus = rsi >= 45 && rsi <= 55 ? 1.05 : 1.0; // 5% bonus for optimal RSI
-    const score = emaRatio * rsiBonus;
+    
+    // EMA component: Reward moderate separation (1.001-1.002), penalize extremes
+    // Too low (<1.001) = weak trend, too high (>1.003) = overextended
+    let emaScore = 1.0;
+    if (emaRatio >= 1.001 && emaRatio <= 1.002) {
+      emaScore = 1.05; // Best range (where wins cluster)
+    } else if (emaRatio > 1.002 && emaRatio <= 1.003) {
+      emaScore = 1.02; // Good range
+    } else if (emaRatio > 1.003) {
+      emaScore = 0.95; // Penalty for overextension (where losses are)
+    } else {
+      emaScore = 0.90; // Penalty for weak trend
+    }
+    
+    // RSI component: Strongly prefer 55-65 range (where 9/11 wins occurred)
+    let rsiScore = 1.0;
+    if (rsi >= 55 && rsi <= 65) {
+      rsiScore = 1.15; // Strong bonus for optimal range
+    } else if (rsi >= 50 && rsi < 55) {
+      rsiScore = 1.05; // Moderate bonus
+    } else if (rsi >= 45 && rsi < 50) {
+      rsiScore = 0.90; // Penalty (where many losses are)
+    } else {
+      rsiScore = 0.85; // Further penalty
+    }
+    
+    // Combined score: EMA quality * RSI quality
+    // This should correlate with wins (higher score = better performance)
+    const score = emaScore * rsiScore;
 
     return { ema12, ema26, rsi, score };
   }
@@ -133,8 +162,12 @@ export class StrategyService {
     const rsiHigh = await this.settingsService.getSettingNumber('RSI_HIGH');
     const volatilityPausePct = await this.settingsService.getSettingNumber('VOLATILITY_PAUSE_PCT');
 
+    // Entry filter thresholds (dynamic max based on volatility)
+    const minEMARatio = 1.001; // Minimum 0.1% separation (wins average 1.0013)
+
     // Fetch signals for all assets
     const signals: Array<{ symbol: string; indicators: IndicatorResult }> = [];
+    const filteredSignals: Array<{ symbol: string; reasons: string[]; indicators: IndicatorResult; return24h: number; maxEmaRatio: number }> = [];
 
     for (const symbol of universe) {
       try {
@@ -146,16 +179,21 @@ export class StrategyService {
 
         const indicators = await this.computeIndicators(ohlcv);
 
-        // Check entry filters
-        const passesFilter =
-          indicators.ema12 > indicators.ema26 &&
-          indicators.rsi >= rsiLow &&
-          indicators.rsi <= rsiHigh;
-
         // Check volatility pause (24h return)
         const currentPrice = ohlcv[ohlcv.length - 1].close;
         const price24hAgo = ohlcv[Math.max(0, ohlcv.length - 4)].close; // Approximate 24h
         const return24h = Math.abs((currentPrice - price24hAgo) / price24hAgo) * 100;
+
+        // Check entry filters
+        const emaRatio = indicators.ema12 / indicators.ema26;
+        const dynamicMaxEMARatio = this.getVolatilityAdjustedMaxEmaRatio(return24h, volatilityPausePct);
+        
+        const passesFilter =
+          emaRatio >= minEMARatio &&
+          emaRatio <= dynamicMaxEMARatio && // Filter out overextended trends
+          indicators.ema12 > indicators.ema26 &&
+          indicators.rsi >= rsiLow &&
+          indicators.rsi <= rsiHigh;
 
         if (return24h > volatilityPausePct) {
           this.logger.debug(`Volatility pause triggered`, {
@@ -168,6 +206,41 @@ export class StrategyService {
 
         if (passesFilter) {
           signals.push({ symbol, indicators });
+        } else {
+          // Track why signal was filtered out
+          const filterReasons = [];
+          if (emaRatio < minEMARatio) {
+            filterReasons.push(`EMA ratio too low (${emaRatio.toFixed(6)} < ${minEMARatio})`);
+          }
+          if (emaRatio > dynamicMaxEMARatio) {
+            filterReasons.push(`EMA ratio too high (${emaRatio.toFixed(6)} > ${dynamicMaxEMARatio.toFixed(3)})`);
+          }
+          if (indicators.ema12 <= indicators.ema26) {
+            filterReasons.push(`EMA12 <= EMA26 (not bullish)`);
+          }
+          if (indicators.rsi < rsiLow) {
+            filterReasons.push(`RSI too low (${indicators.rsi.toFixed(2)} < ${rsiLow})`);
+          }
+          if (indicators.rsi > rsiHigh) {
+            filterReasons.push(`RSI too high (${indicators.rsi.toFixed(2)} > ${rsiHigh})`);
+          }
+          
+          filteredSignals.push({ symbol, reasons: filterReasons, indicators, return24h, maxEmaRatio: dynamicMaxEMARatio });
+          
+          this.logger.debug(`Signal filtered out: ${symbol} - ${filterReasons.join('; ')}`, {
+            symbol,
+            emaRatio: emaRatio.toFixed(6),
+            ema12: indicators.ema12.toFixed(4),
+            ema26: indicators.ema26.toFixed(4),
+            rsi: indicators.rsi.toFixed(2),
+            score: indicators.score.toFixed(3),
+            minEMARatio,
+            maxEMARatio: dynamicMaxEMARatio,
+            rsiLow,
+            rsiHigh,
+            return24h,
+            volatilityPausePct,
+          });
         }
 
         // Persist signal
@@ -182,6 +255,39 @@ export class StrategyService {
           error: error.message,
         });
       }
+    }
+
+    // Log summary of filtered signals if all were filtered
+    if (signals.length === 0 && filteredSignals.length > 0) {
+      const summaryLines = [
+        `All ${filteredSignals.length} signal(s) filtered out. Filter breakdown:`,
+        `Thresholds: EMA ratio minimum ${minEMARatio.toFixed(3)} with volatility-aware cap, RSI [${rsiLow} - ${rsiHigh}]`,
+      ];
+      
+      filteredSignals.forEach(f => {
+        const emaRatio = (f.indicators.ema12 / f.indicators.ema26);
+        summaryLines.push(
+          `  ${f.symbol}: ${f.reasons.join('; ')} (EMA ratio: ${emaRatio.toFixed(6)}, RSI: ${f.indicators.rsi.toFixed(2)}, Score: ${f.indicators.score.toFixed(3)}, Max EMA cap: ${f.maxEmaRatio.toFixed(3)}, 24h return: ${f.return24h.toFixed(2)}%)`
+        );
+      });
+      
+      this.logger.log(summaryLines.join('\n'), {
+        totalSignals: filteredSignals.length,
+        filterBreakdown: filteredSignals.map(f => ({
+          symbol: f.symbol,
+          reasons: f.reasons,
+          emaRatio: (f.indicators.ema12 / f.indicators.ema26).toFixed(6),
+          rsi: f.indicators.rsi.toFixed(2),
+          score: f.indicators.score.toFixed(3),
+          maxEmaRatio: f.maxEmaRatio.toFixed(3),
+          return24h: f.return24h.toFixed(2),
+        })),
+        thresholds: {
+          minEMARatio,
+          rsiLow,
+          rsiHigh,
+        },
+      });
     }
 
     // Rank by score
@@ -235,12 +341,16 @@ export class StrategyService {
     const profitFeeBufferPct = await this.settingsService.getSettingNumber('PROFIT_FEE_BUFFER_PCT');
     const volatilityAdjustmentFactor = await this.settingsService.getSettingNumber('VOLATILITY_ADJUSTMENT_FACTOR');
 
-    // Check for existing open sell orders to avoid duplicates
+    // Check for existing open orders to avoid duplicates
     let pendingSellSymbols = new Set<string>();
+    let pendingBuySymbols = new Set<string>();
     try {
       const openOrders = await this.exchangeService.getOpenOrders();
       pendingSellSymbols = new Set(
         openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
+      );
+      pendingBuySymbols = new Set(
+        openOrders.filter(o => o.side === 'buy').map(o => o.symbol)
       );
     } catch (ordersError: any) {
       this.logger.debug(`Could not check open orders, proceeding with profit/loss check`, {
@@ -261,11 +371,14 @@ export class StrategyService {
         }
 
         const ticker = await this.exchangeService.getTicker(pos.symbol);
-        const currentPrice = ticker.price;
+        // Use bid price for sell orders (what we'd actually get when selling)
+        // This gives a more realistic profit calculation
+        const currentPrice = ticker.bid || ticker.price;
         const entryPrice = parseFloat(pos.entryPrice);
         const quantity = parseFloat(pos.quantity);
         
         // Calculate position value and profit/loss
+        // Use bid price for position value since that's what we'd get when selling
         const positionValue = quantity * currentPrice;
         const entryValue = quantity * entryPrice;
         const profit = quantity * (currentPrice - entryPrice);
@@ -387,6 +500,7 @@ export class StrategyService {
     }
 
     // Close positions not in target (but skip those already marked for profit/loss exit)
+    // IMPORTANT: Only exit if we can do so profitably (or at minimal loss)
     const exitSymbols = new Set(trades.filter(t => t.side === 'sell').map(t => t.symbol));
     for (const pos of currentPositions) {
       // Skip if already marked for profit/loss exit
@@ -395,11 +509,89 @@ export class StrategyService {
       }
       
       if (!targetAssets.includes(pos.symbol)) {
-        trades.push({
-          symbol: pos.symbol,
-          side: 'sell',
-          quantity: parseFloat(pos.quantity),
-        });
+        // SLOW MOMENTUM PHILOSOPHY: Don't exit positions immediately
+        // Positions need time to develop momentum. Only exit if:
+        // 1. Position has been held for at least 2 cadence cycles (to give momentum time to develop)
+        // 2. OR we can exit profitably (lock in gains)
+        // 3. OR loss is minimal (cut losses early, but only after minimum hold period)
+        
+        const positionAgeMs = Date.now() - pos.openedAt.getTime();
+        const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
+        const minHoldCycles = 2; // Minimum 2 cadence cycles before "not in target" exit
+        const minHoldHours = cadenceHours * minHoldCycles;
+        
+        // If position is too new, skip exit (let momentum develop)
+        if (positionAgeHours < minHoldHours) {
+          this.logger.debug(`[TARGET EXIT SKIPPED] Position too new - holding for momentum to develop`, {
+            symbol: pos.symbol,
+            positionAgeHours: positionAgeHours.toFixed(2),
+            minHoldHours: minHoldHours.toFixed(2),
+            cadenceHours,
+          });
+          continue; // Skip this position - too new to exit
+        }
+        
+        // Before exiting, check if we can exit profitably or at least minimize loss
+        try {
+          const ticker = await this.exchangeService.getTicker(pos.symbol);
+          // Use bid price for sell orders (what we'd actually get when selling)
+          // This gives a more realistic profit calculation
+          const currentPrice = ticker.bid || ticker.price;
+          const entryPrice = parseFloat(pos.entryPrice);
+          const quantity = parseFloat(pos.quantity);
+          const entryValue = quantity * entryPrice;
+          const positionValue = quantity * currentPrice;
+          
+          // Calculate gross profit
+          const grossProfit = positionValue - entryValue;
+          
+          // Estimate fees (worst case: taker fees on both sides)
+          const krakenTakerFee = 0.0026; // 0.26% taker fee
+          const estimatedFees = entryValue * krakenTakerFee + positionValue * krakenTakerFee;
+          const netProfit = grossProfit - estimatedFees;
+          
+          // Only exit if:
+          // 1. We have a net profit (lock in gains), OR
+          // 2. The loss is acceptable (less than 1.5% of entry value) AND position is old enough
+          // This respects the slow momentum philosophy: give positions time, but exit if they're clearly not working
+          const maxAcceptableLoss = entryValue * 0.015; // 1.5% max loss for "not in target" exits
+          
+          if (netProfit > 0 || (netProfit >= -maxAcceptableLoss && grossProfit > -maxAcceptableLoss)) {
+            this.logger.log(`[TARGET EXIT] Closing position not in target assets (held ${positionAgeHours.toFixed(2)}h)`, {
+              symbol: pos.symbol,
+              entryPrice: entryPrice.toFixed(4),
+              currentPrice: currentPrice.toFixed(4),
+              grossProfit: grossProfit.toFixed(4),
+              estimatedFees: estimatedFees.toFixed(4),
+              netProfit: netProfit.toFixed(4),
+              positionAgeHours: positionAgeHours.toFixed(2),
+              minHoldHours: minHoldHours.toFixed(2),
+            });
+            
+            trades.push({
+              symbol: pos.symbol,
+              side: 'sell',
+              quantity: parseFloat(pos.quantity),
+            });
+          } else {
+            this.logger.debug(`[TARGET EXIT SKIPPED] Position not in target but exit would be too costly`, {
+              symbol: pos.symbol,
+              entryPrice: entryPrice.toFixed(4),
+              currentPrice: currentPrice.toFixed(4),
+              grossProfit: grossProfit.toFixed(4),
+              estimatedFees: estimatedFees.toFixed(4),
+              netProfit: netProfit.toFixed(4),
+              maxAcceptableLoss: maxAcceptableLoss.toFixed(4),
+              positionAgeHours: positionAgeHours.toFixed(2),
+            });
+          }
+        } catch (error: any) {
+          // If we can't get ticker, log warning but don't exit (safer to hold than exit blindly)
+          this.logger.warn(`[TARGET EXIT SKIPPED] Could not evaluate exit for position not in target`, {
+            symbol: pos.symbol,
+            error: error.message,
+          });
+        }
       }
     }
 
@@ -465,6 +657,14 @@ export class StrategyService {
     // Open new positions (check cooldown and available cash)
     for (const symbol of targetAssets) {
       if (!currentHoldings.has(symbol)) {
+        // Check if there's already a pending buy order for this symbol
+        if (pendingBuySymbols.has(symbol)) {
+          this.logger.debug(`Skipping symbol - buy order already pending`, {
+            symbol,
+          });
+          continue;
+        }
+        
         // Check cooldown: skip if symbol is still in cooldown
         const cooldownCyclesRemaining = this.cooldownMap.get(symbol) || 0;
         if (cooldownCyclesRemaining > 0) {
@@ -479,19 +679,47 @@ export class StrategyService {
         
         // Calculate size based on available cash (not full NAV)
         const remainingCash = availableCash - allocatedCash;
+        
+        // Get settings to check why calculateSize might return 0
+        const maxAllocFraction = await this.settingsService.getSettingNumber('MAX_ALLOC_FRACTION');
+        const minOrderUsd = await this.settingsService.getSettingNumber('MIN_ORDER_USD');
+        const alloc = remainingCash * maxAllocFraction;
+        
         const quantity = await this.calculateSize(remainingCash, ticker.price, symbol);
+        
+        // Log detailed calculation for debugging
+        if (quantity === 0) {
+          const lotInfo = await this.exchangeService.getLotSizeInfo(symbol);
+          const calculatedQty = alloc / ticker.price;
+          const roundedQty = await this.exchangeService.roundToLotSize(symbol, calculatedQty);
+          const orderValueUsd = roundedQty * ticker.price;
+          
+          this.logger.log(`Skipping symbol - cannot create order: Allocation ($${alloc.toFixed(4)}) results in quantity ${calculatedQty.toFixed(8)}, rounded to ${roundedQty.toFixed(8)}. ${roundedQty < lotInfo.minOrderSize ? `Rounded quantity (${roundedQty.toFixed(8)}) < minOrderSize (${lotInfo.minOrderSize})` : ''}${orderValueUsd < minOrderUsd ? `; Order value ($${orderValueUsd.toFixed(4)}) < MIN_ORDER_USD ($${minOrderUsd.toFixed(4)})` : ''}`, {
+            symbol,
+            remainingCash: remainingCash.toFixed(4),
+            price: ticker.price.toFixed(4),
+            maxAllocFraction,
+            alloc: alloc.toFixed(4),
+            minOrderUsd,
+            minOrderSize: lotInfo.minOrderSize,
+            calculatedQty: calculatedQty.toFixed(8),
+            roundedQty: roundedQty.toFixed(8),
+            orderValueUsd: orderValueUsd.toFixed(4),
+          });
+        }
         
         if (quantity > 0) {
           const orderValue = quantity * ticker.price;
           
           // Ensure order value doesn't exceed available cash (accounting for fees)
-          // Use a 30% buffer OR minimum $2.00, whichever is larger, to account for:
-          // - Trading fees (typically 0.16-0.26% on Kraken)
+          // Use a 5% buffer OR minimum $2.00, whichever is larger, to account for:
+          // - Trading fees (typically 0.16-0.26% on Kraken, so 0.5% total for buy+sell worst case)
           // - Locked funds in pending orders
           // - Rounding errors
-          // - Price slippage
+          // - Price slippage (maker orders should have minimal slippage)
           // - Exchange balance may include locked funds
-          const feeBuffer = Math.max(remainingCash * 0.30, 2.00);
+          // 5% is more reasonable than 30% - fees are only ~0.5%, so 5% gives plenty of headroom
+          const feeBuffer = Math.max(remainingCash * 0.05, 2.00);
           const maxOrderValue = remainingCash - feeBuffer;
           
           if (orderValue > maxOrderValue) {
@@ -524,10 +752,33 @@ export class StrategyService {
             cooldownCycles,
           });
         } else {
-          this.logger.debug(`Skipping symbol - insufficient cash or below minimum order size`, {
+          // Get lot size info to provide detailed reason
+          const lotInfo = await this.exchangeService.getLotSizeInfo(symbol);
+          const calculatedQty = alloc / ticker.price;
+          const roundedQty = await this.exchangeService.roundToLotSize(symbol, calculatedQty);
+          const orderValueUsd = roundedQty * ticker.price;
+          const reasons = [];
+          if (alloc < minOrderUsd) {
+            reasons.push(`Allocation ($${alloc.toFixed(4)}) < MIN_ORDER_USD ($${minOrderUsd.toFixed(4)})`);
+          }
+          if (roundedQty < lotInfo.minOrderSize) {
+            reasons.push(`Rounded quantity (${roundedQty.toFixed(8)}) < minOrderSize (${lotInfo.minOrderSize})`);
+          }
+          if (orderValueUsd < minOrderUsd) {
+            reasons.push(`Order value ($${orderValueUsd.toFixed(4)}) < MIN_ORDER_USD ($${minOrderUsd.toFixed(4)})`);
+          }
+          
+          this.logger.log(`Skipping symbol - cannot create order: ${reasons.length > 0 ? reasons.join('; ') : 'Unknown reason'}`, {
             symbol,
-            remainingCash,
-            price: ticker.price,
+            remainingCash: remainingCash.toFixed(4),
+            price: ticker.price.toFixed(4),
+            maxAllocFraction,
+            alloc: alloc.toFixed(4),
+            minOrderUsd,
+            minOrderSize: lotInfo.minOrderSize,
+            calculatedQty: calculatedQty.toFixed(8),
+            roundedQty: roundedQty.toFixed(8),
+            orderValueUsd: orderValueUsd.toFixed(4),
           });
         }
       }
@@ -559,6 +810,13 @@ export class StrategyService {
       if (availableCash < 1) {
         reasons.push(`Insufficient cash (available: $${availableCash.toFixed(4)})`);
       }
+      if (targetAssets.length === 0) {
+        if (signals.length === 0) {
+          reasons.push(`No signals passed entry filters (all ${universe.length} assets filtered out)`);
+        } else {
+          reasons.push(`No target assets selected (${signals.length} signal(s) generated but topK=0, availableSlots=${availableSlots})`);
+        }
+      }
       const alreadyHeld = targetAssets.filter(s => currentHoldings.has(s));
       if (alreadyHeld.length > 0) {
         reasons.push(`Already holding: ${alreadyHeld.join(', ')}`);
@@ -567,14 +825,21 @@ export class StrategyService {
       if (inCooldown.length > 0) {
         reasons.push(`In cooldown: ${inCooldown.map(s => `${s} (${this.cooldownMap.get(s)} cycles)`).join(', ')}`);
       }
+      const pendingBuy = targetAssets.filter(s => pendingBuySymbols.has(s));
+      if (pendingBuy.length > 0) {
+        reasons.push(`Pending buy orders: ${pendingBuy.join(', ')}`);
+      }
       
       this.logger.log(`No trades generated - ${reasons.length > 0 ? reasons.join('; ') : 'Unknown reason'}`, {
         hasAvailableSlots: availableSlots > 0,
         availableCash: availableCash.toFixed(4),
         targetAssets,
+        totalSignals: signals.length,
+        signalsPassedFilters: signals.length,
         currentPositions: currentPositions.map(p => p.symbol),
         symbolsInCooldown: Array.from(this.cooldownMap.keys()),
         symbolsAlreadyHeld: alreadyHeld,
+        pendingBuySymbols: Array.from(pendingBuySymbols),
       });
     } else if (trades.length < availableSlots) {
       // Log why we didn't fill all available slots
@@ -609,6 +874,21 @@ export class StrategyService {
    */
   clearCooldown(symbol: string): void {
     this.cooldownMap.delete(symbol);
+  }
+
+  /**
+   * Adjust the maximum EMA ratio based on recent volatility.
+   * Calm markets allow slightly higher EMA separation, while high volatility tightens the cap.
+   */
+  private getVolatilityAdjustedMaxEmaRatio(return24h: number, volatilityPausePct: number): number {
+    const calmCap = 1.006; // When markets are quiet we can tolerate slightly higher EMA spread
+    const volatileCap = 1.003; // Tighten cap as volatility approaches pause threshold
+    if (volatilityPausePct <= 0) {
+      return volatileCap;
+    }
+    const normalized = Math.min(Math.max(return24h / volatilityPausePct, 0), 1); // 0 (calm) -> 1 (at pause)
+    const dynamicCap = calmCap - normalized * (calmCap - volatileCap);
+    return parseFloat(dynamicCap.toFixed(6));
   }
 }
 

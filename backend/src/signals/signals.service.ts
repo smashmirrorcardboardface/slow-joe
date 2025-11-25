@@ -36,5 +36,17 @@ export class SignalsService {
       order: { generatedAt: 'DESC' },
     });
   }
+
+  async findAll(limit?: number): Promise<Signal[]> {
+    const query = this.signalRepository
+      .createQueryBuilder('signal')
+      .orderBy('signal.generatedAt', 'DESC');
+    
+    if (limit) {
+      query.take(limit);
+    }
+    
+    return query.getMany();
+  }
 }
 

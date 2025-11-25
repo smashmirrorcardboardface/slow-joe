@@ -6,6 +6,7 @@ export class KrakenAdapter {
   private apiKey: string;
   private apiSecret: string;
   private baseUrl = 'https://api.kraken.com';
+  private lastNonce = 0; // Tracks the latest nonce we have sent
 
   constructor(apiKey?: string, apiSecret?: string) {
     // Trim whitespace that might cause issues
@@ -73,20 +74,34 @@ export class KrakenAdapter {
     }
   }
 
-  private async privateRequest(endpoint: string, params: any = {}): Promise<any> {
+  private generateNonce(): string {
+    const microSeconds = Date.now() * 1000;
+    if (microSeconds > this.lastNonce) {
+      this.lastNonce = microSeconds;
+    } else {
+      this.lastNonce += 1;
+    }
+    return this.lastNonce.toString();
+  }
+
+  private async delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private async privateRequest(endpoint: string, params: any = {}, retryCount = 0): Promise<any> {
     if (!this.apiKey || !this.apiSecret) {
       throw new Error('Kraken API credentials not configured');
     }
 
-    // Kraken requires nonce to be a number (milliseconds since epoch, or microseconds for better uniqueness)
-    // Using microseconds to ensure uniqueness if multiple requests happen quickly
-    const nonceValue = Date.now() * 1000; // Convert to microseconds
+    // Kraken requires strictly increasing nonce values per API key.
+    // Use microseconds plus a monotonic counter to ensure uniqueness.
+    const nonceValue = this.generateNonce();
     const postData = querystring.stringify({ ...params, nonce: nonceValue });
     
     // For signature: message = nonce + postData
     // The nonce appears twice: once as prefix to message, once in postData
     // This is correct per Kraken's API specification
-    const signature = this.getSignature(endpoint, nonceValue.toString(), postData);
+    const signature = this.getSignature(endpoint, nonceValue, postData);
 
     try {
       const response = await axios.post(`${this.baseUrl}${endpoint}`, postData, {
@@ -99,12 +114,19 @@ export class KrakenAdapter {
 
       if (response.data.error && response.data.error.length > 0) {
         const errorMsg = response.data.error.join(', ');
+        // Check for Invalid nonce and retry before throwing
+        if (errorMsg.includes('Invalid nonce') && retryCount < 3) {
+          const backoffMs = 50 * (retryCount + 1);
+          await this.delay(backoffMs);
+          return this.privateRequest(endpoint, params, retryCount + 1);
+        }
         throw new Error(`Kraken API error: ${errorMsg}`);
       }
 
       return response.data.result || {};
     } catch (error: any) {
-      if (error.response && error.response.data.error) {
+      // Handle axios errors (network errors, HTTP errors)
+      if (error.response && error.response.data && error.response.data.error) {
         const errorMsg = error.response.data.error.join(', ');
         // Provide more helpful error message
         if (errorMsg.includes('Invalid key')) {
@@ -114,7 +136,18 @@ export class KrakenAdapter {
 3. No IP restrictions blocking your server
 4. API key and secret are correctly copied (no extra spaces)`);
         }
+        if (errorMsg.includes('Invalid nonce') && retryCount < 3) {
+          const backoffMs = 50 * (retryCount + 1);
+          await this.delay(backoffMs);
+          return this.privateRequest(endpoint, params, retryCount + 1);
+        }
         throw new Error(`Kraken API error: ${errorMsg}`);
+      }
+      // Handle manually thrown errors (check message for nonce errors)
+      if (error.message && error.message.includes('Invalid nonce') && retryCount < 3) {
+        const backoffMs = 50 * (retryCount + 1);
+        await this.delay(backoffMs);
+        return this.privateRequest(endpoint, params, retryCount + 1);
       }
       throw error;
     }
@@ -301,15 +334,47 @@ export class KrakenAdapter {
       }
       
       // Convert Kraken asset codes to our format
-      const reverseAssetMapping: { [key: string]: string } = {
-        'ZUSD': 'USD',
-        'XBT': 'BTC',
-        'ZGBP': 'GBP',
+      const mapKrakenAssetToSymbol = (code: string): string => {
+        if (!code) return code;
+        const directMap: { [key: string]: string } = {
+          ZUSD: 'USD',
+          XXBT: 'BTC',
+          XBT: 'BTC',
+          XETH: 'ETH',
+          ZGBP: 'GBP',
+          XXRP: 'XRP',
+          XRP: 'XRP',
+          XXDG: 'DOGE',
+          XDG: 'DOGE',
+          XLTC: 'LTC',
+          XETC: 'ETC',
+          ADA: 'ADA',
+          XADA: 'ADA',
+          SOL: 'SOL',
+          XSOL: 'SOL',
+          AVAX: 'AVAX',
+          XAVAX: 'AVAX',
+          DOT: 'DOT',
+          XDOT: 'DOT',
+        };
+        if (directMap[code]) {
+          return directMap[code];
+        }
+        let normalized = code.toUpperCase();
+        if (normalized.startsWith('X') || normalized.startsWith('Z')) {
+          normalized = normalized.slice(1);
+        }
+        if (normalized.startsWith('X') || normalized.startsWith('Z')) {
+          normalized = normalized.slice(1);
+        }
+        if (normalized === 'XBT') normalized = 'BTC';
+        if (normalized === 'XDG') normalized = 'DOGE';
+        return normalized;
       };
       
       const balances: { [asset: string]: number } = {};
       for (const [krakenAsset, balance] of Object.entries(data)) {
-        const asset = reverseAssetMapping[krakenAsset] || krakenAsset;
+        const asset = mapKrakenAssetToSymbol(krakenAsset);
         const balanceValue = parseFloat(balance as string);
         if (balanceValue > 0) {
           balances[asset] = balanceValue;
@@ -331,24 +396,44 @@ export class KrakenAdapter {
         return { asset, free: 0, locked: 0 };
       }
       
-      // Kraken uses different asset codes: USD -> ZUSD, BTC -> XBT, etc.
-      const assetMapping: { [key: string]: string } = {
-        'USD': 'ZUSD',
-        'BTC': 'XBT',
-        'ETH': 'ETH',
-        'GBP': 'ZGBP',
+      const uppercaseAsset = asset.toUpperCase();
+      const assetMapping: { [key: string]: string[] } = {
+        ZUSD: ['USD'],
+        USD: ['ZUSD'],
+        BTC: ['XBT', 'XXBT'],
+        ETH: ['XETH'],
+        GBP: ['ZGBP'],
+        DOGE: ['XDG', 'XXDG'],
+        XRP: ['XXRP'],
+        AVAX: ['XAVAX'],
+        ADA: ['XADA'],
+        DOT: ['XDOT'],
+        SOL: ['XSOL'],
       };
       
-      const krakenAsset = assetMapping[asset] || asset;
+      const candidates = new Set<string>();
+      candidates.add(uppercaseAsset);
       
-      // Try both mapped asset and original asset name
+      if (assetMapping[uppercaseAsset]) {
+        assetMapping[uppercaseAsset].forEach((code) => candidates.add(code));
+      }
+      
+      if (assetMapping[`X${uppercaseAsset}`]) {
+        assetMapping[`X${uppercaseAsset}`].forEach((code) => candidates.add(code));
+      }
+      
+      // Add generic Kraken prefixes if not already present
+      candidates.add(`X${uppercaseAsset}`);
+      candidates.add(`XX${uppercaseAsset}`);
+      candidates.add(`Z${uppercaseAsset}`);
+      candidates.add(`ZZ${uppercaseAsset}`);
+      
       let balance = 0;
-      if (data[krakenAsset]) {
-        balance = parseFloat(data[krakenAsset]);
-      } else if (data[asset]) {
-        balance = parseFloat(data[asset]);
-      } else {
-        balance = 0;
+      for (const candidate of candidates) {
+        if (data[candidate] !== undefined) {
+          balance = parseFloat(data[candidate]);
+          break;
+        }
       }
       
       return {
@@ -357,7 +442,6 @@ export class KrakenAdapter {
         locked: 0,
       };
     } catch (error: any) {
-      // Return zero balance on error rather than throwing
       return { asset, free: 0, locked: 0 };
     }
   }

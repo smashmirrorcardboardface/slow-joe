@@ -21,7 +21,13 @@
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/config/typeorm.config.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/config/typeorm.config.ts",
-    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/config/typeorm.config.ts"
+    "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/config/typeorm.config.ts",
+    "analyze:signals": "npm run build && node dist/scripts/analyze-signal-quality.js",
+    "reconcile": "npm run build && node dist/scripts/trigger-reconcile.js",
+    "check:orders": "npm run build && node dist/scripts/check-pending-orders.js",
+    "next:refresh": "npm run build && node dist/scripts/next-refresh.js",
+    "check:positions": "npm run build && node dist/scripts/check-positions.js",
+    "debug:balances": "npm run build && node dist/scripts/debug-balance-lookup.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^10.0.1",
