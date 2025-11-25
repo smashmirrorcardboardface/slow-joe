@@ -10,10 +10,13 @@ import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
 import { RealtimeService } from '../../realtime/realtime.service';
 import { SettingsService } from '../../settings/settings.service';
+import { getBotId } from '../../common/utils/bot.utils';
 
 @Processor('reconcile')
 @Injectable()
 export class ReconcileProcessor extends WorkerHost {
+  private botIdCache?: string;
+
   constructor(
     private exchangeService: ExchangeService,
     private positionsService: PositionsService,
@@ -29,10 +32,18 @@ export class ReconcileProcessor extends WorkerHost {
     this.logger.setContext('ReconcileProcessor');
   }
 
+  private getBotIdValue(): string {
+    if (!this.botIdCache) {
+      this.botIdCache = getBotId(this.configService);
+    }
+    return this.botIdCache;
+  }
+
   async process(job: Job) {
     this.logger.log('Starting reconciliation', { jobId: job.id });
 
     try {
+      const botId = this.getBotIdValue();
       // Sync positions from exchange balances first
       await this.syncPositionsFromBalances(job.id);
       
@@ -41,7 +52,7 @@ export class ReconcileProcessor extends WorkerHost {
       const balance = await this.exchangeService.getBalance(baseCurrency);
       
       // Calculate NAV from positions
-      const positions = await this.positionsService.findOpen();
+      const positions = await this.positionsService.findOpenByBot(botId);
       let totalValue = parseFloat(balance.free.toString()) + parseFloat(balance.locked.toString());
 
       for (const pos of positions) {
@@ -182,6 +193,7 @@ export class ReconcileProcessor extends WorkerHost {
 
   private async syncPositionsFromBalances(jobId: string) {
     try {
+      const botId = this.getBotIdValue();
       // Get all balances from exchange
       const allBalances = await this.exchangeService.getAllBalances();
       
@@ -190,7 +202,7 @@ export class ReconcileProcessor extends WorkerHost {
       const universe = universeStr.split(',').map(s => s.trim());
       
       // Get current open positions from database
-      const dbPositions = await this.positionsService.findOpen();
+      const dbPositions = await this.positionsService.findOpenByBot(botId);
       const dbPositionSymbols = new Set(dbPositions.map(p => p.symbol));
       
       // Track symbols we're about to create positions for (to avoid closing them)
@@ -299,12 +311,12 @@ export class ReconcileProcessor extends WorkerHost {
             const ticker = tickerForSymbol || await this.exchangeService.getTicker(symbol);
             const entryPrice = ticker.price;
             
-            await this.positionsService.create({
+            await this.positionsService.createForBot({
               symbol,
               quantity: quantity.toString(),
               entryPrice: entryPrice.toString(),
               status: 'open',
-            });
+            }, botId);
             
             this.logger.log(`Created missing position from exchange balance`, {
               jobId,
@@ -320,12 +332,12 @@ export class ReconcileProcessor extends WorkerHost {
             });
             // Create position with current price as estimate
             // We'll update it on next reconcile when ticker is available
-            await this.positionsService.create({
+            await this.positionsService.createForBot({
               symbol,
               quantity: quantity.toString(),
               entryPrice: '0', // Will be updated on next reconcile
               status: 'open',
-            });
+            }, botId);
           }
         }
       }

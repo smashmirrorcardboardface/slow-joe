@@ -608,6 +608,7 @@ export class KrakenAdapter {
           price: parseFloat(orderData.descr?.price || '0'),
           status: orderData.status || 'open',
           openedAt: new Date(parseFloat(orderData.opentm || '0') * 1000),
+          userref: orderData.userref,
         });
       }
       

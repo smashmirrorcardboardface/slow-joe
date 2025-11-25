@@ -7,9 +7,13 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { ConfigService } from '@nestjs/config';
 import { PositionsService } from '../positions/positions.service';
 import { StrategyService } from '../strategy/strategy.service';
+import { getBotId, getUserrefPrefix, orderBelongsToBot } from '../common/utils/bot.utils';
 
 @Injectable()
 export class JobsScheduler {
+  private botIdCache?: string;
+  private userrefPrefixCache?: string;
+
   constructor(
     private jobsService: JobsService,
     private settingsService: SettingsService,
@@ -20,6 +24,20 @@ export class JobsScheduler {
     private strategyService: StrategyService,
   ) {
     this.logger.setContext('JobsScheduler');
+  }
+
+  private getBotIdValue(): string {
+    if (!this.botIdCache) {
+      this.botIdCache = getBotId(this.configService);
+    }
+    return this.botIdCache;
+  }
+
+  private getUserrefPrefixValue(): string {
+    if (!this.userrefPrefixCache) {
+      this.userrefPrefixCache = getUserrefPrefix(this.configService);
+    }
+    return this.userrefPrefixCache;
   }
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -55,7 +73,10 @@ export class JobsScheduler {
       );
       const staleThresholdMs = fillTimeoutMinutes * 60 * 1000; // Convert to milliseconds
 
-      const openOrders = await this.exchangeService.getOpenOrders();
+      const userrefPrefix = this.getUserrefPrefixValue();
+      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+        orderBelongsToBot(order, userrefPrefix),
+      );
       const now = Date.now();
       let cancelledCount = 0;
 
@@ -197,14 +218,18 @@ export class JobsScheduler {
         return;
       }
 
-      const openPositions = await this.positionsService.findOpen();
+      const botId = this.getBotIdValue();
+      const userrefPrefix = this.getUserrefPrefixValue();
+      const openPositions = await this.positionsService.findOpenByBot(botId);
       
       if (openPositions.length === 0) {
         return;
       }
 
       // Check for existing open sell orders to avoid duplicates
-      const openOrders = await this.exchangeService.getOpenOrders();
+      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+        orderBelongsToBot(order, userrefPrefix),
+      );
       const pendingSellSymbols = new Set(
         openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
       );

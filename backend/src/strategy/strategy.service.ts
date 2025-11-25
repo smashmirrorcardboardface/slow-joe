@@ -8,6 +8,7 @@ import { PositionsService } from '../positions/positions.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { SettingsService } from '../settings/settings.service';
 import { LoggerService } from '../logger/logger.service';
+import { getBotId, getUserrefPrefix, orderBelongsToBot } from '../common/utils/bot.utils';
 
 export interface IndicatorResult {
   ema12: number;
@@ -26,6 +27,8 @@ export interface TradeDecision {
 export class StrategyService {
   private enabled = true;
   private cooldownMap: Map<string, number> = new Map(); // Maps symbol to cycle count when last entered
+  private botIdCache?: string;
+  private userrefPrefixCache?: string;
 
   constructor(
     private configService: ConfigService,
@@ -46,6 +49,20 @@ export class StrategyService {
 
   toggle(enabled: boolean): void {
     this.enabled = enabled;
+  }
+
+  private getBotIdValue(): string {
+    if (!this.botIdCache) {
+      this.botIdCache = getBotId(this.configService);
+    }
+    return this.botIdCache;
+  }
+
+  private getUserrefPrefixValue(): string {
+    if (!this.userrefPrefixCache) {
+      this.userrefPrefixCache = getUserrefPrefix(this.configService);
+    }
+    return this.userrefPrefixCache;
   }
 
   async computeIndicators(candles: OHLCV[]): Promise<IndicatorResult> {
@@ -290,11 +307,14 @@ export class StrategyService {
       });
     }
 
+    const botId = this.getBotIdValue();
+    const userrefPrefix = this.getUserrefPrefixValue();
+
     // Rank by score
     signals.sort((a, b) => b.indicators.score - a.indicators.score);
 
     // Get current positions first (needed for calculating available slots)
-    const currentPositions = await this.positionsService.findOpen();
+    const currentPositions = await this.positionsService.findOpenByBot(botId);
     const currentPositionCount = currentPositions.length;
 
     // Get top K assets based on MAX_POSITIONS setting
@@ -345,7 +365,9 @@ export class StrategyService {
     let pendingSellSymbols = new Set<string>();
     let pendingBuySymbols = new Set<string>();
     try {
-      const openOrders = await this.exchangeService.getOpenOrders();
+      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+        orderBelongsToBot(order, userrefPrefix),
+      );
       pendingSellSymbols = new Set(
         openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
       );
@@ -603,7 +625,9 @@ export class StrategyService {
       
       // Also subtract locked funds from open orders
       try {
-        const openOrders = await this.exchangeService.getOpenOrders();
+      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+        orderBelongsToBot(order, userrefPrefix),
+      );
         let lockedInOrders = 0;
         for (const order of openOrders) {
           if (order.side === 'buy') {

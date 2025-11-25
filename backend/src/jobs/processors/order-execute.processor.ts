@@ -9,10 +9,14 @@ import { MetricsService } from '../../metrics/metrics.service';
 import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
 import { JobsService } from '../jobs.service';
+import { buildBotUserref, getBotId, getUserrefPrefix } from '../../common/utils/bot.utils';
 
 @Processor('order-execute')
 @Injectable()
 export class OrderExecuteProcessor extends WorkerHost {
+  private botIdCache?: string;
+  private userrefPrefixCache?: string;
+
   constructor(
     private configService: ConfigService,
     private exchangeService: ExchangeService,
@@ -27,6 +31,20 @@ export class OrderExecuteProcessor extends WorkerHost {
     this.logger.setContext('OrderExecuteProcessor');
   }
 
+  private getBotIdValue(): string {
+    if (!this.botIdCache) {
+      this.botIdCache = getBotId(this.configService);
+    }
+    return this.botIdCache;
+  }
+
+  private getUserrefPrefixValue(): string {
+    if (!this.userrefPrefixCache) {
+      this.userrefPrefixCache = getUserrefPrefix(this.configService);
+    }
+    return this.userrefPrefixCache;
+  }
+
   async process(job: Job<{ symbol: string; side: 'buy' | 'sell'; quantity: number; price: number }>) {
     const { symbol, side, quantity, price } = job.data;
     this.logger.log(`Executing ${side} order`, {
@@ -36,6 +54,8 @@ export class OrderExecuteProcessor extends WorkerHost {
       quantity,
       price,
     });
+    const botId = this.getBotIdValue();
+    const userrefPrefix = this.getUserrefPrefixValue();
 
     const makerOffsetPct = parseFloat(
       this.configService.get<string>('MAKER_OFFSET_PCT') || '0.001',
@@ -90,7 +110,7 @@ export class OrderExecuteProcessor extends WorkerHost {
             
             // Try to get position info to see if there's a mismatch
             try {
-              const positions = await this.positionsService.findBySymbol(symbol);
+              const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
               const openPositions = positions.filter(p => p.status === 'open');
               if (openPositions.length > 0) {
                 const positionQuantity = openPositions.reduce((sum, p) => sum + parseFloat(p.quantity), 0);
@@ -180,9 +200,7 @@ export class OrderExecuteProcessor extends WorkerHost {
         ? ticker.ask * (1 - makerOffsetPct)
         : ticker.bid * (1 + makerOffsetPct);
 
-      // Kraken userref must be numeric (integer), so use timestamp-based numeric ID
-      // Use last 9 digits of timestamp to fit in int32 range
-      const clientOrderId = parseInt(Date.now().toString().slice(-9), 10).toString();
+      const clientOrderId = buildBotUserref(userrefPrefix);
       
       // Place limit order with rounded quantity
       const orderResult = await this.exchangeService.placeLimitOrder(
@@ -240,15 +258,15 @@ export class OrderExecuteProcessor extends WorkerHost {
 
         // Update position
         if (side === 'buy') {
-          await this.positionsService.create({
+        await this.positionsService.createForBot({
             symbol,
             quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
             entryPrice: orderStatus.filledPrice?.toString() || limitPrice.toString(),
             status: 'open',
-          });
+        }, botId);
         } else {
           // Close position
-          const positions = await this.positionsService.findBySymbol(symbol);
+          const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
           for (const pos of positions) {
             if (pos.status === 'open') {
               await this.positionsService.closePosition(pos.id);
@@ -301,14 +319,14 @@ export class OrderExecuteProcessor extends WorkerHost {
               exchangeOrderId: orderResult.orderId,
             });
             if (side === 'buy') {
-              await this.positionsService.create({
+              await this.positionsService.createForBot({
                 symbol,
                 quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
                 entryPrice: finalStatus.filledPrice?.toString() || limitPrice.toString(),
                 status: 'open',
-              });
+              }, botId);
             } else {
-              const positions = await this.positionsService.findBySymbol(symbol);
+              const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
               for (const pos of positions) {
                 if (pos.status === 'open') {
                   await this.positionsService.closePosition(pos.id);
@@ -379,15 +397,15 @@ export class OrderExecuteProcessor extends WorkerHost {
 
           // Update position
           if (side === 'buy') {
-            await this.positionsService.create({
+            await this.positionsService.createForBot({
               symbol,
               quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
               entryPrice: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
               status: 'open',
-            });
+            }, botId);
           } else {
             // Close position
-            const positions = await this.positionsService.findBySymbol(symbol);
+            const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
             for (const pos of positions) {
               if (pos.status === 'open') {
                 await this.positionsService.closePosition(pos.id);

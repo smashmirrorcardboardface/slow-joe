@@ -1,19 +1,23 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
+import { ConfigService } from '@nestjs/config';
 import { PositionsService } from '../src/positions/positions.service';
 import { DataSource } from 'typeorm';
+import { getBotId } from '../src/common/utils/bot.utils';
 
 async function checkPositions() {
   const app = await NestFactory.createApplicationContext(AppModule);
   const positionsService = app.get(PositionsService);
+  const configService = app.get(ConfigService);
   const dataSource = app.get(DataSource);
+  const botId = getBotId(configService);
 
   console.log('\n=== POSITION DATABASE CHECK ===\n');
 
   try {
-    // Get all positions
-    const allPositions = await positionsService.findAll();
-    const openPositions = await positionsService.findOpen();
+    // Get all positions for this bot
+    const allPositions = await positionsService.findAllByBot(botId);
+    const openPositions = await positionsService.findOpenByBot(botId);
     const closedPositions = allPositions.filter(p => p.status === 'closed');
 
     console.log(`📊 Summary:`);

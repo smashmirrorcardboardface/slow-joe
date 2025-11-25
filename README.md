@@ -122,6 +122,23 @@ Configure via environment variables:
 
 See `backend/.env.example` for all available settings.
 
+### Running Multiple Bots on the Same Kraken Account
+
+Slow Joe can now tag every position and order with a `BOT_ID`, allowing multiple bots to share a Kraken account without stepping on each other’s trades. When running alongside another bot (e.g., Fast Eddy):
+
+- Set a unique `BOT_ID` in `backend/.env` (default is `slow-joe`).
+- Set a unique numeric `BOT_USERREF_PREFIX` (1–3 digits). Orders created by Slow Joe will embed this prefix in Kraken’s `userref`, and Slow Joe will only manage orders with that prefix.
+- Ensure each bot’s `UNIVERSE` is disjoint, or consciously coordinate which symbols they control. Slow Joe will only create/close positions that carry its `BOT_ID`, but exchange balances are still shared.
+
+Example `.env` snippet:
+
+```
+BOT_ID=slow-joe
+BOT_USERREF_PREFIX=10
+```
+
+Run the other bot with a different `BOT_ID`/prefix combo to keep their orders and reconciliations isolated.
+
 ## API Endpoints
 
 All endpoints require JWT authentication (except `/api/auth/login`):

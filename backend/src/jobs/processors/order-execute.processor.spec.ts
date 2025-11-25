@@ -31,8 +31,8 @@ describe('OrderExecuteProcessor', () => {
     };
 
     const mockPositionsService = {
-      create: jest.fn(),
-      findBySymbol: jest.fn(),
+      createForBot: jest.fn(),
+      findBySymbolForBot: jest.fn(),
       closePosition: jest.fn(),
     };
 
@@ -165,7 +165,7 @@ describe('OrderExecuteProcessor', () => {
       });
 
       tradesService.create.mockResolvedValue({} as any);
-      positionsService.create.mockResolvedValue({} as any);
+      positionsService.createForBot.mockResolvedValue({} as any);
 
       await processor.process(job);
 
@@ -178,7 +178,10 @@ describe('OrderExecuteProcessor', () => {
           fee: '0.5',
         }),
       );
-      expect(positionsService.create).toHaveBeenCalled();
+      expect(positionsService.createForBot).toHaveBeenCalledWith(
+        expect.objectContaining({ symbol: 'BTC-USD' }),
+        'slow-joe',
+      );
     });
 
     it('should execute sell order and close position', async () => {
@@ -209,7 +212,7 @@ describe('OrderExecuteProcessor', () => {
         fee: 0.5,
       });
 
-      positionsService.findBySymbol.mockResolvedValue([
+      positionsService.findBySymbolForBot.mockResolvedValue([
         {
           id: 'pos-1',
           symbol: 'BTC-USD',
@@ -226,7 +229,7 @@ describe('OrderExecuteProcessor', () => {
 
       await processor.process(job);
 
-      expect(positionsService.findBySymbol).toHaveBeenCalledWith('BTC-USD');
+      expect(positionsService.findBySymbolForBot).toHaveBeenCalledWith('BTC-USD', 'slow-joe');
       expect(positionsService.closePosition).toHaveBeenCalledWith('pos-1');
     });
 
@@ -449,7 +452,10 @@ describe('OrderExecuteProcessor', () => {
       try {
         await processor.process(job);
         expect(tradesService.create).toHaveBeenCalled();
-        expect(positionsService.create).toHaveBeenCalled();
+        expect(positionsService.createForBot).toHaveBeenCalledWith(
+          expect.objectContaining({ symbol: 'BTC-USD' }),
+          'slow-joe',
+        );
       } finally {
         setTimeoutSpy.mockRestore();
       }

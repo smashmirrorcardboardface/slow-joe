@@ -1,4 +1,5 @@
 import { Controller, Get, Post, UseGuards, Header, Query } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { MetricsService } from './metrics.service';
 import { PositionsService } from '../positions/positions.service';
 import { TradesService } from '../trades/trades.service';
@@ -7,6 +8,7 @@ import { JobsService } from '../jobs/jobs.service';
 import { HealthService } from '../health/health.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { ExchangeService } from '../exchange/exchange.service';
+import { getBotId } from '../common/utils/bot.utils';
 
 @Controller('api/metrics')
 export class MetricsController {
@@ -18,14 +20,16 @@ export class MetricsController {
     private healthService: HealthService,
     private realtimeService: RealtimeService,
     private exchangeService: ExchangeService,
+    private configService: ConfigService,
   ) {}
 
   @Get()
   @UseGuards(JwtAuthGuard)
   async getMetrics() {
+    const botId = getBotId(this.configService);
     const nav = await this.metricsService.getNAV();
     const totalFees = await this.metricsService.getTotalFees();
-    const positions = await this.positionsService.findOpen();
+    const positions = await this.positionsService.findOpenByBot(botId);
     const allTrades = await this.tradesService.findAll(10000);
     const recentTrades = allTrades.slice(0, 10);
     
