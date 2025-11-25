@@ -10,6 +10,7 @@ import { MetricsModule } from '../metrics/metrics.module';
 import { AlertsModule } from '../alerts/alerts.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { SettingsModule } from '../settings/settings.module';
+import { OptimizationModule } from '../optimization/optimization.module';
 import { SignalPollerProcessor } from './processors/signal-poller.processor';
 import { StrategyEvaluateProcessor } from './processors/strategy-evaluate.processor';
 import { OrderExecuteProcessor } from './processors/order-execute.processor';
@@ -35,6 +36,7 @@ import { JobsScheduler } from './jobs.scheduler';
     AlertsModule,
     RealtimeModule,
     SettingsModule,
+    OptimizationModule,
   ],
   providers: [
     JobsService,

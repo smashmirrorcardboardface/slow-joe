@@ -208,6 +208,19 @@ export class OrderExecuteProcessor extends WorkerHost {
         }
       }
 
+      // Final check for sell orders: verify position still exists right before placing order
+      // This prevents race conditions where reconciliation closes the position between balance check and order placement
+      if (side === 'sell') {
+        const finalPositionCheck = await this.positionsService.findBySymbolForBot(symbol, botId);
+        if (finalPositionCheck.length === 0) {
+          this.logger.warn(`Skipping sell order for ${symbol} - position no longer exists (likely closed by reconciliation)`, {
+            jobId: job.id,
+            symbol,
+          });
+          return; // Exit gracefully - position was already closed
+        }
+      }
+
       const ticker = await this.exchangeService.getTicker(symbol);
       // For BUY: place limit order slightly below ask to get maker fee
       // For SELL: place limit order slightly above bid to get maker fee
@@ -218,13 +231,44 @@ export class OrderExecuteProcessor extends WorkerHost {
       const clientOrderId = buildBotUserref(userrefPrefix);
       
       // Place limit order with rounded quantity
-      const orderResult = await this.exchangeService.placeLimitOrder(
-        symbol,
-        side,
-        roundedQuantity,
-        limitPrice,
-        clientOrderId,
-      );
+      let orderResult;
+      try {
+        orderResult = await this.exchangeService.placeLimitOrder(
+          symbol,
+          side,
+          roundedQuantity,
+          limitPrice,
+          clientOrderId,
+        );
+      } catch (orderError: any) {
+        // Handle "Insufficient funds" error gracefully for sell orders
+        // This can happen if position was closed/reconciled between balance check and order placement
+        if (side === 'sell' && orderError.message?.includes('Insufficient')) {
+          // Double-check if position still exists
+          const postErrorPositionCheck = await this.positionsService.findBySymbolForBot(symbol, botId);
+          if (postErrorPositionCheck.length === 0) {
+            this.logger.warn(`Sell order failed with 'Insufficient funds' but position no longer exists - likely closed by reconciliation`, {
+              jobId: job.id,
+              symbol,
+              error: orderError.message,
+            });
+            return; // Exit gracefully - position was already closed
+          }
+          
+          // Position still exists but we got insufficient funds error
+          // This could be a real issue (e.g., balance locked in another order)
+          this.logger.error(`Sell order failed with 'Insufficient funds' but position still exists`, orderError.stack || orderError.message, {
+            jobId: job.id,
+            symbol,
+            error: orderError.message,
+            positionQuantity: postErrorPositionCheck[0].quantity,
+          });
+          throw orderError; // Re-throw - this is a real error
+        }
+        
+        // For buy orders or other errors, re-throw
+        throw orderError;
+      }
 
       this.logger.log(`Placed limit order`, {
         jobId: job.id,
@@ -377,19 +421,36 @@ export class OrderExecuteProcessor extends WorkerHost {
         }
 
         // Place market order as fallback
+        // For market orders after a failed limit order, allow slightly higher slippage (up to 1%)
+        // since we've already waited 15 minutes and the market may have moved
         const currentTicker = await this.exchangeService.getTicker(symbol);
         const expectedPrice = side === 'buy' ? currentTicker.ask : currentTicker.bid;
         // Compare against limitPrice (what we tried to get) not original price (from job data)
         const slippagePct = Math.abs((expectedPrice - limitPrice) / limitPrice);
+        
+        // Allow up to 1% slippage for market order fallbacks (more lenient than initial 0.5%)
+        const marketOrderMaxSlippage = 0.01; // 1%
 
+        if (slippagePct > marketOrderMaxSlippage) {
+          this.logger.warn(`Expected slippage exceeds market order max (${(marketOrderMaxSlippage * 100).toFixed(1)}%), skipping market order`, {
+            jobId: job.id,
+            symbol,
+            slippagePct: slippagePct * 100,
+            marketOrderMaxSlippage: marketOrderMaxSlippage * 100,
+            originalLimitPrice: limitPrice.toFixed(8),
+            currentPrice: expectedPrice.toFixed(8),
+          });
+          throw new Error(`Slippage too high: ${(slippagePct * 100).toFixed(2)}% (max: ${(marketOrderMaxSlippage * 100).toFixed(1)}%)`);
+        }
+        
         if (slippagePct > maxSlippagePct) {
-          this.logger.warn(`Expected slippage exceeds max, skipping market order`, {
+          // Slippage is higher than preferred but within market order tolerance
+          this.logger.warn(`Market order slippage (${(slippagePct * 100).toFixed(2)}%) exceeds preferred max (${(maxSlippagePct * 100).toFixed(2)}%) but proceeding anyway`, {
             jobId: job.id,
             symbol,
             slippagePct: slippagePct * 100,
             maxSlippagePct: maxSlippagePct * 100,
           });
-          throw new Error(`Slippage too high: ${(slippagePct * 100).toFixed(2)}%`);
         }
 
         this.logger.log(`Placing market order`, {

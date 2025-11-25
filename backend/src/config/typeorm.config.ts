@@ -7,6 +7,7 @@ import { Metric } from '../entities/metric.entity';
 import { OHLCV } from '../entities/ohlcv.entity';
 import { Alert } from '../entities/alert.entity';
 import { Setting } from '../entities/setting.entity';
+import { OptimizationReport } from '../entities/optimization-report.entity';
 
 export const typeOrmConfig = (): TypeOrmModuleOptions => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -15,7 +16,7 @@ export const typeOrmConfig = (): TypeOrmModuleOptions => {
     return {
       type: 'postgres',
       url: databaseUrl,
-      entities: [Asset, Signal, Position, Trade, Metric, OHLCV, Alert, Setting],
+      entities: [Asset, Signal, Position, Trade, Metric, OHLCV, Alert, Setting, OptimizationReport],
       synchronize: process.env.NODE_ENV === 'development',
       logging: false, // Disable verbose query logging
     };
@@ -28,7 +29,7 @@ export const typeOrmConfig = (): TypeOrmModuleOptions => {
     username: process.env.DB_USERNAME || 'postgres',
     password: process.env.DB_PASSWORD || 'postgres',
     database: process.env.DB_DATABASE || 'rotationbot',
-    entities: [Asset, Signal, Position, Trade, Metric, OHLCV, Alert],
+    entities: [Asset, Signal, Position, Trade, Metric, OHLCV, Alert, Setting, OptimizationReport],
     synchronize: process.env.NODE_ENV === 'development',
     logging: false, // Disable verbose query logging
   };

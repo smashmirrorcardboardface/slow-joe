@@ -7,6 +7,7 @@ import { ExchangeService } from '../exchange/exchange.service';
 import { ConfigService } from '@nestjs/config';
 import { PositionsService } from '../positions/positions.service';
 import { StrategyService } from '../strategy/strategy.service';
+import { OptimizationService } from '../optimization/optimization.service';
 import { getBotId, getUserrefPrefix, orderBelongsToBot } from '../common/utils/bot.utils';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class JobsScheduler {
     private configService: ConfigService,
     private positionsService: PositionsService,
     private strategyService: StrategyService,
+    private optimizationService: OptimizationService,
   ) {
     this.logger.setContext('JobsScheduler');
   }
@@ -413,6 +415,24 @@ export class JobsScheduler {
       }
     } catch (error: any) {
       this.logger.error('Error during profit/loss threshold check', error.stack, {
+        error: error.message,
+      });
+    }
+  }
+
+  // Run optimization analysis every night at 2 AM
+  @Cron('0 2 * * *') // 2 AM every day
+  async handleOptimization() {
+    try {
+      this.logger.log('Starting nightly optimization analysis');
+      const report = await this.optimizationService.runOptimization();
+      this.logger.log('Nightly optimization completed', {
+        reportId: report.id,
+        recommendationsCount: report.recommendations?.length || 0,
+        appliedChangesCount: report.appliedChanges?.length || 0,
+      });
+    } catch (error: any) {
+      this.logger.error('Error during optimization analysis', error.stack, {
         error: error.message,
       });
     }

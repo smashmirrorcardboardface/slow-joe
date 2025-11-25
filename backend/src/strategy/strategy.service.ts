@@ -385,12 +385,61 @@ export class StrategyService {
         const profitPct = (profit / entryValue) * 100;
         
         positionPnLMap.set(pos.symbol, { profit, profitPct });
+        this.logger.log(`Position P&L calculated for score adjustment`, {
+          symbol: pos.symbol,
+          entryPrice: entryPrice.toFixed(4),
+          currentPrice: currentPrice.toFixed(4),
+          profit: profit.toFixed(4),
+          profitPct: profitPct.toFixed(2),
+        });
       } catch (error: any) {
         // If we can't get ticker, skip P&L adjustment for this position
-        this.logger.debug(`Could not get P&L for position ${pos.symbol}`, {
+        this.logger.warn(`Could not get P&L for position ${pos.symbol}`, {
           error: error.message,
         });
       }
+    }
+    
+    // Log P&L map for debugging
+    if (positionPnLMap.size > 0) {
+      const pnlSummary = Array.from(positionPnLMap.entries()).map(([symbol, pnl]) => 
+        `${symbol}: ${pnl.profitPct.toFixed(2)}%`
+      ).join(', ');
+      this.logger.log(`Position P&L map: ${pnlSummary}`, {
+        positionCount: positionPnLMap.size,
+        pnlDetails: Array.from(positionPnLMap.entries()).map(([symbol, pnl]) => ({
+          symbol,
+          profitPct: pnl.profitPct.toFixed(2),
+          profit: pnl.profit.toFixed(4),
+        })),
+      });
+    }
+    
+    // Log signals being checked
+    const signalsWithPositions = signals.filter(s => positionPnLMap.has(s.symbol));
+    const heldPositionsNotInSignals = Array.from(positionPnLMap.keys()).filter(symbol => 
+      !signals.some(s => s.symbol === symbol)
+    );
+    
+    if (signalsWithPositions.length > 0) {
+      this.logger.log(`Checking ${signalsWithPositions.length} signal(s) for held positions`, {
+        symbols: signalsWithPositions.map(s => s.symbol),
+      });
+    }
+    
+    // Log held positions that aren't in signals (filtered out or don't meet entry criteria)
+    if (heldPositionsNotInSignals.length > 0) {
+      const pnlForFiltered = heldPositionsNotInSignals.map(symbol => {
+        const pnl = positionPnLMap.get(symbol);
+        return `${symbol}: ${pnl?.profitPct.toFixed(2)}%`;
+      }).join(', ');
+      this.logger.log(`Held positions not in signals (filtered out or don't meet entry criteria): ${pnlForFiltered}`, {
+        symbols: heldPositionsNotInSignals,
+        pnlDetails: heldPositionsNotInSignals.map(symbol => {
+          const pnl = positionPnLMap.get(symbol);
+          return { symbol, profitPct: pnl?.profitPct.toFixed(2), profit: pnl?.profit.toFixed(4) };
+        }),
+      });
     }
     
     // Adjust signal scores based on current position performance
@@ -410,13 +459,20 @@ export class StrategyService {
           const penaltyFactor = 1.0 - (penaltyPct / 100);
           const originalScore = signal.indicators.score;
           signal.indicators.score *= penaltyFactor;
-          this.logger.debug(`Adjusted signal score for losing position`, {
+          this.logger.log(`Adjusted signal score for losing position`, {
             symbol: signal.symbol,
             originalScore: originalScore.toFixed(3),
             adjustedScore: signal.indicators.score.toFixed(3),
             profitPct: positionPnL.profitPct.toFixed(2),
             penaltyPct: penaltyPct.toFixed(1),
             penaltyFactor: penaltyFactor.toFixed(3),
+          });
+        } else {
+          // Log when we're holding a position but it's not losing enough to penalize
+          this.logger.log(`Position ${signal.symbol} P&L: ${positionPnL.profitPct.toFixed(2)}% (no penalty, threshold: -0.5%)`, {
+            symbol: signal.symbol,
+            profitPct: positionPnL.profitPct.toFixed(2),
+            score: signal.indicators.score.toFixed(3),
           });
         }
       }
@@ -430,9 +486,13 @@ export class StrategyService {
     
     // Calculate how many new positions we can open
     let availableSlots = Math.max(0, maxPositions - currentPositionCount);
-    const topK = Math.min(availableSlots, signals.length);
+    const currentHoldings = new Set(currentPositions.map((p) => p.symbol));
     
-    let targetAssets = signals.slice(0, topK).map((s) => s.symbol);
+    // Filter out signals for positions we already hold, then select top K
+    const availableSignals = signals.filter(s => !currentHoldings.has(s.symbol));
+    const topK = Math.min(availableSlots, availableSignals.length);
+    
+    let targetAssets = availableSignals.slice(0, topK).map((s) => s.symbol);
     
     const topSignals = signals.slice(0, Math.min(5, signals.length)).map(s => `${s.symbol} (score: ${s.indicators.score.toFixed(3)})`).join(', ');
     this.logger.log(`Position selection: maxPositions=${maxPositions}, current=${currentPositionCount}, availableSlots=${availableSlots}, topK=${topK}, targetAssets=[${targetAssets.join(', ')}], topSignals=[${topSignals}]`, {
@@ -442,11 +502,11 @@ export class StrategyService {
       topK,
       targetAssets,
       totalSignals: signals.length,
+      availableSignals: availableSignals.length,
       nav,
       allSignals: signals.map(s => ({ symbol: s.symbol, score: s.indicators.score, rsi: s.indicators.rsi })),
       currentPositions: currentPositions.map(p => p.symbol),
     });
-    const currentHoldings = new Set(currentPositions.map((p) => p.symbol));
 
     // Update cooldown map: decrement cycles for all symbols
     for (const [symbol, cycles] of this.cooldownMap.entries()) {
@@ -559,7 +619,10 @@ export class StrategyService {
         const krakenTakerFee = 0.0026; // 0.26% taker fee (use worst case)
         const totalFeesPct = (krakenTakerFee * 2) + (profitFeeBufferPct / 100); // Buy + sell fees + buffer
         
-        const profitThresholdPct = Math.max(minProfitPct, totalFeesPct * 100);
+        // Ensure profit threshold accounts for fees: if MIN_PROFIT_PCT is 3%, we need at least 3% + fees to make real profit
+        // Add 0.6% buffer on top of fees to ensure we're making meaningful profit after fees
+        const minProfitAfterFees = totalFeesPct * 100 + 0.6; // Fees (~0.52%) + 0.6% buffer = ~1.12% minimum
+        const profitThresholdPct = Math.max(minProfitPct, minProfitAfterFees);
         const profitThresholdUsd = (entryValue * profitThresholdPct) / 100;
         const effectiveProfitThreshold = Math.max(profitThresholdUsd, minProfitUsd);
         
@@ -668,12 +731,33 @@ export class StrategyService {
       }
       
       // Check if position has been held for minimum period
-      // Since we only check positions that are "due for evaluation" (already passed at least 1 cadence cycle),
-      // we can use a shorter minimum hold period for rotation (1 cadence cycle instead of 2)
+      // Increase minimum hold period to let winners run and reduce fee drag
       const positionAgeMs = Date.now() - pos.openedAt.getTime();
       const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
-      const minHoldCycles = 1; // Minimum 1 cadence cycle before rotation (positions are already due for evaluation)
+      const minHoldCycles = 3; // Minimum 3 cadence cycles (6-12 hours) before rotation to reduce trading frequency
       const minHoldHours = cadenceHours * minHoldCycles;
+      
+      // Calculate current P&L to check if position is profitable
+      let currentProfitPct = 0;
+      let isProfitable = false;
+      try {
+        const ticker = await this.exchangeService.getTicker(pos.symbol);
+        const currentPrice = ticker.bid || ticker.price;
+        const entryPrice = parseFloat(pos.entryPrice);
+        const quantity = parseFloat(pos.quantity);
+        const entryValue = quantity * entryPrice;
+        const positionValue = quantity * currentPrice;
+        const grossProfit = positionValue - entryValue;
+        const krakenTakerFee = 0.0026;
+        const estimatedFees = entryValue * krakenTakerFee + positionValue * krakenTakerFee;
+        const netProfit = grossProfit - estimatedFees;
+        currentProfitPct = (grossProfit / entryValue) * 100;
+        // Consider profitable if net profit is positive OR gross profit > 1% (fees are ~0.52%)
+        isProfitable = netProfit > 0 || currentProfitPct > 1.0;
+      } catch (error: any) {
+        // If we can't get ticker, assume not profitable to be conservative
+        this.logger.debug(`Could not calculate P&L for rotation check`, { symbol: pos.symbol, error: error.message });
+      }
       
       // Only consider rotation if position has been held for minimum period
       if (positionAgeHours >= minHoldHours) {
@@ -688,9 +772,22 @@ export class StrategyService {
           positionScore: positionScore.toFixed(3),
           isInTop5,
           isInTop4,
+          isProfitable,
+          currentProfitPct: currentProfitPct.toFixed(2),
           top5Signals,
           top4Signals,
         });
+        
+        // DON'T rotate out of profitable positions - let winners run
+        // Only rotate if position is losing money or barely breaking even
+        if (isProfitable && currentProfitPct > 1.5) {
+          this.logger.debug(`[ROTATION SKIPPED] Position is profitable (${currentProfitPct.toFixed(2)}%), letting winner run`, {
+            symbol: pos.symbol,
+            currentProfitPct: currentProfitPct.toFixed(2),
+            positionScore: positionScore.toFixed(3),
+          });
+          continue; // Skip rotation for profitable positions
+        }
         
         // If position is not in top 5 and there are better signals available (top 4)
         if (!isInTop5 && top4Signals.length > 0) {
@@ -816,8 +913,40 @@ export class StrategyService {
         // Reuse position age calculation from rotation check above
         const positionAgeMs = Date.now() - pos.openedAt.getTime();
         const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
-        const minHoldCycles = 2; // Minimum 2 cadence cycles before "not in target" exit
+        const minHoldCycles = 4; // Minimum 4 cadence cycles (8-12 hours) before "not in target" exit to reduce trading frequency
         const minHoldHours = cadenceHours * minHoldCycles;
+        
+        // Calculate current P&L - don't exit profitable positions just because they're not in target
+        let currentProfitPct = 0;
+        let isProfitable = false;
+        try {
+          const ticker = await this.exchangeService.getTicker(pos.symbol);
+          const currentPrice = ticker.bid || ticker.price;
+          const entryPrice = parseFloat(pos.entryPrice);
+          const quantity = parseFloat(pos.quantity);
+          const entryValue = quantity * entryPrice;
+          const positionValue = quantity * currentPrice;
+          const grossProfit = positionValue - entryValue;
+          const krakenTakerFee = 0.0026;
+          const estimatedFees = entryValue * krakenTakerFee + positionValue * krakenTakerFee;
+          const netProfit = grossProfit - estimatedFees;
+          currentProfitPct = (grossProfit / entryValue) * 100;
+          // Consider profitable if net profit is positive OR gross profit > 1% (fees are ~0.52%)
+          isProfitable = netProfit > 0 || currentProfitPct > 1.0;
+        } catch (error: any) {
+          // If we can't get ticker, assume not profitable to be conservative
+          this.logger.debug(`Could not calculate P&L for target exit check`, { symbol: pos.symbol, error: error.message });
+        }
+        
+        // DON'T exit profitable positions just because they're not in target - let winners run
+        if (isProfitable && currentProfitPct > 1.5) {
+          this.logger.debug(`[TARGET EXIT SKIPPED] Position is profitable (${currentProfitPct.toFixed(2)}%), letting winner run even though not in target`, {
+            symbol: pos.symbol,
+            currentProfitPct: currentProfitPct.toFixed(2),
+            targetAssets,
+          });
+          continue; // Skip exit for profitable positions
+        }
         
         // If position is too new, skip exit (let momentum develop)
         if (positionAgeHours < minHoldHours) {
@@ -901,8 +1030,10 @@ export class StrategyService {
     const exitCount = trades.filter(t => t.side === 'sell').length;
     if (exitCount > 0) {
       const newAvailableSlots = Math.max(0, maxPositions - (currentPositionCount - exitCount));
-      const newTopK = Math.min(newAvailableSlots, signals.length);
-      const newTargetAssets = signals.slice(0, newTopK).map((s) => s.symbol);
+      // Filter out held positions from signals before selecting top K
+      const availableSignalsAfterExit = signals.filter(s => !currentHoldings.has(s.symbol));
+      const newTopK = Math.min(newAvailableSlots, availableSignalsAfterExit.length);
+      const newTargetAssets = availableSignalsAfterExit.slice(0, newTopK).map((s) => s.symbol);
       
       // Update targetAssets to include signals we want to rotate into
       // Add any top 4 signals that we're not already holding and not already in targetAssets
@@ -929,33 +1060,55 @@ export class StrategyService {
     let availableCash = 0;
     try {
       const balance = await this.exchangeService.getBalance('USD');
-      availableCash = parseFloat(balance.free.toString());
+      // balance.free should already exclude locked funds, but let's verify
+      // by checking open orders and comparing with balance.locked
+      const freeBalance = parseFloat(balance.free.toString());
+      const lockedBalance = parseFloat(balance.locked.toString());
       
-      // Also subtract locked funds from open orders
+      // Get open buy orders to verify locked funds calculation
       try {
-      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
-        orderBelongsToBot(order, userrefPrefix),
-      );
-        let lockedInOrders = 0;
+        const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+          orderBelongsToBot(order, userrefPrefix),
+        );
+        let calculatedLockedInBuyOrders = 0;
         for (const order of openOrders) {
           if (order.side === 'buy') {
-            // For buy orders, the locked amount is quantity * price
-            lockedInOrders += order.remainingQuantity * order.price;
+            // For buy orders, the locked amount is remaining quantity * price
+            calculatedLockedInBuyOrders += order.remainingQuantity * order.price;
           }
         }
-        availableCash -= lockedInOrders;
         
-        this.logger.debug(`Retrieved free USD balance from exchange`, {
-          free: balance.free,
-          locked: balance.locked,
-          openOrdersCount: openOrders.length,
-          lockedInOrders: lockedInOrders.toFixed(4),
+        // Use the exchange's free balance directly (it should already exclude locked funds)
+        // But log both for debugging
+        availableCash = freeBalance;
+        
+        // Log detailed balance info for debugging
+        this.logger.log(`Available cash calculation from exchange balance`, {
+          freeBalance: freeBalance.toFixed(4),
+          lockedBalance: lockedBalance.toFixed(4),
+          totalBalance: (freeBalance + lockedBalance).toFixed(4),
+          openBuyOrdersCount: openOrders.filter(o => o.side === 'buy').length,
+          calculatedLockedInBuyOrders: calculatedLockedInBuyOrders.toFixed(4),
           availableCash: availableCash.toFixed(4),
+          difference: Math.abs(lockedBalance - calculatedLockedInBuyOrders).toFixed(4),
         });
+        
+        // If there's a significant discrepancy, warn about it
+        const discrepancy = Math.abs(lockedBalance - calculatedLockedInBuyOrders);
+        if (discrepancy > 0.01) {
+          this.logger.warn(`Locked balance discrepancy detected`, {
+            exchangeLocked: lockedBalance.toFixed(4),
+            calculatedLocked: calculatedLockedInBuyOrders.toFixed(4),
+            discrepancy: discrepancy.toFixed(4),
+            usingFreeBalance: freeBalance.toFixed(4),
+          });
+        }
       } catch (ordersError: any) {
-        this.logger.warn(`Could not get open orders, using balance only`, {
+        this.logger.warn(`Could not get open orders, using free balance only`, {
           error: ordersError.message,
+          freeBalance: freeBalance.toFixed(4),
         });
+        availableCash = freeBalance;
       }
     } catch (error: any) {
       this.logger.warn(`Could not get balance from exchange, falling back to NAV calculation`, {
@@ -1003,9 +1156,18 @@ export class StrategyService {
     // Open new positions (check cooldown and available cash)
     for (const symbol of targetAssets) {
       if (!currentHoldings.has(symbol)) {
-        // Check if there's already a pending buy order for this symbol
+        // Check if there's already a pending buy order for this symbol on the exchange
         if (pendingBuySymbols.has(symbol)) {
-          this.logger.debug(`Skipping symbol - buy order already pending`, {
+          this.logger.debug(`Skipping symbol - buy order already pending on exchange`, {
+            symbol,
+          });
+          continue;
+        }
+        
+        // Check if we've already added a buy trade for this symbol in this evaluation
+        const alreadyAdded = trades.some(t => t.side === 'buy' && t.symbol === symbol);
+        if (alreadyAdded) {
+          this.logger.debug(`Skipping symbol - buy trade already added in this evaluation`, {
             symbol,
           });
           continue;

@@ -22,6 +22,7 @@ import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
 import { AlertsModule } from './alerts/alerts.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { OptimizationModule } from './optimization/optimization.module';
 import { typeOrmConfig } from './config/typeorm.config';
 
 @Module({
@@ -59,6 +60,7 @@ import { typeOrmConfig } from './config/typeorm.config';
     LoggerModule,
     AlertsModule,
     RealtimeModule,
+    OptimizationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
