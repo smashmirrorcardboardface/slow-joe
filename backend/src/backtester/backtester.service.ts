@@ -145,6 +145,8 @@ export class BacktesterService {
             side: 'sell',
             quantity: position.quantity,
           });
+          // Set cooldown when selling (consistent with strategy service)
+          cooldownMap.set(symbol, config.cooldownCycles);
         }
       }
 
@@ -163,7 +165,8 @@ export class BacktesterService {
 
           if (quantity > 0) {
             trades.push({ symbol, side: 'buy', quantity });
-            cooldownMap.set(symbol, config.cooldownCycles);
+            // Note: Cooldown is NOT set when buying - it's set when selling (above)
+            // This matches the strategy service behavior
           }
         }
       }

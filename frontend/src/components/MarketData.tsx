@@ -64,8 +64,8 @@ function MarketData() {
 
   const getChangeColor = (change: number | null) => {
     if (change === null) return '#9ca3af';
-    if (change > 0) return '#4ade80';
-    if (change < 0) return '#f5576c';
+    if (change > 0) return '#fb923c';
+    if (change < 0) return '#9ca3af';
     return '#9ca3af';
   };
 
@@ -74,22 +74,22 @@ function MarketData() {
     
     const { ema12, ema26, rsi } = item.indicators;
     
-    if (!ema12 || !ema26 || !rsi) return { text: 'Calculating...', color: '#fbbf24' };
+    if (!ema12 || !ema26 || !rsi) return { text: 'Calculating...', color: '#9ca3af' };
     
     const emaBullish = ema12 > ema26;
     const rsiInRange = rsi >= 40 && rsi <= 70;
     
     if (emaBullish && rsiInRange) {
-      return { text: 'BUY Signal', color: '#4ade80' };
+      return { text: 'BUY Signal', color: '#fb923c' };
     }
     if (!emaBullish) {
-      return { text: 'Bearish', color: '#f5576c' };
+      return { text: 'Bearish', color: '#9ca3af' };
     }
     if (rsi > 70) {
-      return { text: 'Overbought', color: '#fbbf24' };
+      return { text: 'Overbought', color: '#9ca3af' };
     }
     if (rsi < 40) {
-      return { text: 'Oversold', color: '#fbbf24' };
+      return { text: 'Oversold', color: '#9ca3af' };
     }
     
     return { text: 'Neutral', color: '#9ca3af' };
@@ -137,7 +137,7 @@ function MarketData() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
               <h3 style={{ margin: 0, fontSize: '1.25rem' }}>{item.symbol}</h3>
               {item.error ? (
-                <span style={{ color: '#f5576c', fontSize: '0.875rem' }}>Error</span>
+                <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>Error</span>
               ) : (
                 <span
                   style={{
@@ -155,7 +155,7 @@ function MarketData() {
             </div>
 
             {item.error ? (
-              <div style={{ color: '#f5576c', fontSize: '0.875rem' }}>{item.error}</div>
+              <div style={{ color: '#9ca3af', fontSize: '0.875rem' }}>{item.error}</div>
             ) : (
               <>
                 <div style={{ marginBottom: '1rem' }}>
@@ -192,6 +192,24 @@ function MarketData() {
                       <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>EMA26</div>
                       <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
                         {item.indicators.ema26 ? formatPrice(item.indicators.ema26) : 'N/A'}
+                      </div>
+                    </div>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>EMA Ratio (12/26)</div>
+                      <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
+                        {item.indicators.ema12 && item.indicators.ema26 ? (
+                          <>
+                            <span style={{ 
+                              color: (item.indicators.ema12 / item.indicators.ema26) >= 1.001 ? '#fb923c' : '#9ca3af',
+                              fontWeight: '600'
+                            }}>
+                              {(item.indicators.ema12 / item.indicators.ema26).toFixed(6)}
+                            </span>
+                            <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#9ca3af' }}>
+                              {(item.indicators.ema12 / item.indicators.ema26) >= 1.001 ? '(Bullish)' : '(Bearish)'}
+                            </span>
+                          </>
+                        ) : 'N/A'}
                       </div>
                     </div>
                     <div style={{ gridColumn: '1 / -1' }}>

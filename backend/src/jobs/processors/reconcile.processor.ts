@@ -306,7 +306,26 @@ export class ReconcileProcessor extends WorkerHost {
             }
           }
         } else {
-          // No position in database, create one
+          // No position in database, but balance exists on exchange
+          // Check MAX_POSITIONS before creating position
+          const currentPositions = await this.positionsService.findOpenByBot(botId);
+          const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+          
+          if (currentPositions.length >= maxPositions) {
+            this.logger.warn(`Cannot create position from reconciliation - MAX_POSITIONS (${maxPositions}) already reached`, {
+              jobId,
+              symbol,
+              quantity,
+              currentPositions: currentPositions.length,
+              maxPositions,
+              existingPositions: currentPositions.map(p => p.symbol),
+              note: 'Balance exists on exchange but position limit reached - position will be created on next reconcile if slot becomes available',
+            });
+            // Don't create the position - this could be from another bot or manual trade
+            // If it's from this bot, it will be created when a slot opens
+            continue;
+          }
+          
           // Mark this symbol as one we're creating to avoid closing it
           symbolsToCreate.add(symbol);
           

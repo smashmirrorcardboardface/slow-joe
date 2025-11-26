@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useRealtime } from '../hooks/useRealtime';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { RefreshCw, AlertCircle } from 'lucide-react';
 
 const API_BASE = '/api';
 
@@ -58,96 +63,81 @@ function Signals() {
     return 'neutral';
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'buy': return '#4ade80';
-      case 'sell': return '#f5576c';
-      default: return '#9ca3af';
-    }
-  };
-
   if (loading && signals.length === 0) {
-    return <div className="card">Loading signals...</div>;
+    return <Card><CardContent className="pt-6">Loading signals...</CardContent></Card>;
   }
 
   return (
-    <div className="card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h2 style={{ margin: 0 }}>Recent Signals</h2>
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          {lastUpdate && (
-            <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-              Updated: {lastUpdate.toLocaleTimeString()}
-            </span>
-          )}
-          <button
-            className="button"
-            onClick={fetchSignals}
-            disabled={loading}
-            style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
-          >
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </button>
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Recent Signals</CardTitle>
+          <div className="flex items-center gap-2">
+            {lastUpdate && (
+              <span className="text-sm text-muted-foreground">
+                Updated: {lastUpdate.toLocaleTimeString()}
+              </span>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchSignals}
+              disabled={loading}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
-      </div>
-      {error && (
-        <div style={{ 
-          background: 'rgba(239, 68, 68, 0.2)', 
-          border: '1px solid rgba(239, 68, 68, 0.5)', 
-          color: '#fca5a5', 
-          padding: '0.75rem', 
-          borderRadius: '8px', 
-          marginBottom: '1rem' 
-        }}>
-          Error: {error}
-        </div>
-      )}
-      {signals.length === 0 && !loading ? (
-        <div style={{ textAlign: 'center', padding: '2rem', color: '#9ca3af' }}>
-          No signals generated yet. Signals are created every 6 hours when the strategy runs.
-        </div>
-      ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Symbol</th>
-              <th>EMA12</th>
-              <th>EMA26</th>
-              <th>RSI</th>
-              <th>Score</th>
-              <th>Generated At</th>
-            </tr>
-          </thead>
-          <tbody>
-            {signals.map((signal) => {
-              const status = getSignalStatus(signal);
-              return (
-                <tr key={signal.id}>
-                  <td>
-                    <span style={{
-                      padding: '0.25rem 0.5rem',
-                      borderRadius: '4px',
-                      fontSize: '0.75rem',
-                      backgroundColor: getStatusColor(status) + '20',
-                      color: getStatusColor(status),
-                    }}>
-                      {status.toUpperCase()}
-                    </span>
-                  </td>
-                  <td><strong>{signal.symbol}</strong></td>
-                  <td>{signal.indicators?.ema12?.toFixed(2)}</td>
-                  <td>{signal.indicators?.ema26?.toFixed(2)}</td>
-                  <td>{signal.indicators?.rsi?.toFixed(2)}</td>
-                  <td>{signal.indicators?.score?.toFixed(4)}</td>
-                  <td>{new Date(signal.generatedAt).toLocaleString()}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </div>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded-md text-sm text-destructive flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />
+            Error: {error}
+          </div>
+        )}
+        {signals.length === 0 && !loading ? (
+          <div className="text-center py-12 text-muted-foreground">
+            No signals generated yet. Signals are created every 6 hours when the strategy runs.
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Status</TableHead>
+                <TableHead>Symbol</TableHead>
+                <TableHead>EMA12</TableHead>
+                <TableHead>EMA26</TableHead>
+                <TableHead>RSI</TableHead>
+                <TableHead>Score</TableHead>
+                <TableHead>Generated At</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {signals.map((signal) => {
+                const status = getSignalStatus(signal);
+                return (
+                  <TableRow key={signal.id}>
+                    <TableCell>
+                      <Badge variant={status === 'buy' ? 'success' : 'secondary'}>
+                        {status.toUpperCase()}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-medium">{signal.symbol}</TableCell>
+                    <TableCell>{signal.indicators?.ema12?.toFixed(2)}</TableCell>
+                    <TableCell>{signal.indicators?.ema26?.toFixed(2)}</TableCell>
+                    <TableCell>{signal.indicators?.rsi?.toFixed(2)}</TableCell>
+                    <TableCell>{signal.indicators?.score?.toFixed(4)}</TableCell>
+                    <TableCell className="text-muted-foreground">{new Date(signal.generatedAt).toLocaleString()}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

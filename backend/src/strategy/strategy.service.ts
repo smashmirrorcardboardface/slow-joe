@@ -26,6 +26,7 @@ export interface TradeDecision {
 @Injectable()
 export class StrategyService {
   private enabled = true;
+  private evaluationInProgress = false;
   private cooldownMap: Map<string, number> = new Map(); // Maps symbol to cycle count when last entered
   private botIdCache?: string;
   private userrefPrefixCache?: string;
@@ -203,6 +204,21 @@ export class StrategyService {
       return [];
     }
 
+    // Prevent concurrent evaluations
+    if (this.evaluationInProgress) {
+      this.logger.debug('Strategy evaluation already in progress, skipping');
+      return [];
+    }
+
+    this.evaluationInProgress = true;
+    try {
+      return await this.evaluateInternal();
+    } finally {
+      this.evaluationInProgress = false;
+    }
+  }
+
+  private async evaluateInternal(): Promise<TradeDecision[]> {
     const nav = await this.metricsService.getNAV();
     const minBalanceUsd = await this.settingsService.getSettingNumber('MIN_BALANCE_USD');
 
@@ -484,8 +500,67 @@ export class StrategyService {
     // Get top K assets based on MAX_POSITIONS setting
     const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
     
+    // Determine trades needed (declare early so we can use it for excess position closing)
+    const trades: TradeDecision[] = [];
+    
+    // If we have more positions than MAX_POSITIONS, close the worst-performing ones
+    // This handles cases where positions were created before MAX_POSITIONS checks were in place
+    let adjustedPositionCount = currentPositionCount;
+    if (currentPositionCount > maxPositions) {
+      const excessCount = currentPositionCount - maxPositions;
+      this.logger.warn(`Excess positions detected - closing ${excessCount} worst-performing position(s) to comply with MAX_POSITIONS=${maxPositions}`, {
+        currentPositions: currentPositionCount,
+        maxPositions,
+        excessCount,
+        positions: currentPositions.map(p => p.symbol),
+      });
+      
+      // Calculate P&L for all positions to identify worst performers
+      const positionPnL: Array<{ position: (typeof currentPositions)[0]; profitPct: number }> = [];
+      for (const pos of currentPositions) {
+        try {
+          const ticker = await this.exchangeService.getTicker(pos.symbol);
+          const currentPrice = ticker.bid || ticker.price;
+          const entryPrice = parseFloat(pos.entryPrice);
+          const profitPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+          positionPnL.push({ position: pos, profitPct });
+        } catch (error: any) {
+          // If we can't get ticker, assume worst case (will be closed)
+          this.logger.debug(`Could not get ticker for ${pos.symbol} during excess position check`, {
+            error: error.message,
+          });
+          positionPnL.push({ position: pos, profitPct: -999 }); // Worst case
+        }
+      }
+      
+      // Sort by profit (worst first) and close the worst performers
+      positionPnL.sort((a, b) => a.profitPct - b.profitPct);
+      const positionsToClose = positionPnL.slice(0, excessCount);
+      
+      for (const { position, profitPct } of positionsToClose) {
+        this.logger.log(`Closing excess position - ${position.symbol} (P&L: ${profitPct.toFixed(2)}%) to comply with MAX_POSITIONS`, {
+          symbol: position.symbol,
+          profitPct: profitPct.toFixed(2),
+          reason: 'Exceeds MAX_POSITIONS limit',
+        });
+        
+        trades.push({
+          symbol: position.symbol,
+          side: 'sell',
+          quantity: parseFloat(position.quantity),
+        });
+        
+        // Set cooldown to prevent immediate re-entry
+        const cooldownCycles = await this.settingsService.getSettingInt('COOLDOWN_CYCLES');
+        this.cooldownMap.set(position.symbol, cooldownCycles);
+      }
+      
+      // Update adjusted position count after closing excess positions
+      adjustedPositionCount = maxPositions;
+    }
+    
     // Calculate how many new positions we can open
-    let availableSlots = Math.max(0, maxPositions - currentPositionCount);
+    let availableSlots = Math.max(0, maxPositions - adjustedPositionCount);
     const currentHoldings = new Set(currentPositions.map((p) => p.symbol));
     
     // Filter out signals for positions we already hold, then select top K
@@ -495,9 +570,10 @@ export class StrategyService {
     let targetAssets = availableSignals.slice(0, topK).map((s) => s.symbol);
     
     const topSignals = signals.slice(0, Math.min(5, signals.length)).map(s => `${s.symbol} (score: ${s.indicators.score.toFixed(3)})`).join(', ');
-    this.logger.log(`Position selection: maxPositions=${maxPositions}, current=${currentPositionCount}, availableSlots=${availableSlots}, topK=${topK}, targetAssets=[${targetAssets.join(', ')}], topSignals=[${topSignals}]`, {
+    this.logger.log(`Position selection: maxPositions=${maxPositions}, current=${adjustedPositionCount}, availableSlots=${availableSlots}, topK=${topK}, targetAssets=[${targetAssets.join(', ')}], topSignals=[${topSignals}]`, {
       maxPositions,
-      currentPositionCount,
+      currentPositionCount: adjustedPositionCount,
+      originalPositionCount: currentPositionCount,
       availableSlots,
       topK,
       targetAssets,
@@ -516,9 +592,6 @@ export class StrategyService {
         this.cooldownMap.delete(symbol);
       }
     }
-
-    // Determine trades needed
-    const trades: TradeDecision[] = [];
 
     // Get profit and loss threshold settings
     const minProfitUsd = await this.settingsService.getSettingNumber('MIN_PROFIT_USD');
@@ -888,22 +961,42 @@ export class StrategyService {
     
     // Close positions not in target (but skip those already marked for exit)
     // IMPORTANT: Only exit if we can do so profitably (or at minimal loss)
-    // Only check positions that are due for evaluation (per-position evaluation cycle)
+    // Check positions that are due for evaluation OR positions not in signals at all
+    // (If a position isn't even in signals, it should be evaluated for exit even if not "due")
+    const signalSymbols = new Set(signals.map(s => s.symbol));
     for (const pos of currentPositions) {
       // Skip if already marked for exit
       if (exitSymbols.has(pos.symbol)) {
         continue;
       }
       
-      // Skip if position is not due for evaluation (per-position evaluation cycle)
-      if (!duePositionSymbols.has(pos.symbol)) {
-        this.logger.debug(`Skipping target exit check - position not due for evaluation`, {
+      // Check if position is in signals
+      const isInSignals = signalSymbols.has(pos.symbol);
+      
+      // Skip if position is not due for evaluation AND it's in signals
+      // (If it's not in signals, we should evaluate it for exit even if not "due")
+      if (!duePositionSymbols.has(pos.symbol) && isInSignals) {
+        this.logger.debug(`Skipping target exit check - position not due for evaluation but is in signals`, {
           symbol: pos.symbol,
         });
         continue;
       }
       
+      // If position is not in signals at all, log it
+      if (!isInSignals) {
+        this.logger.log(`Position not in signals - evaluating for exit even if not due for evaluation`, {
+          symbol: pos.symbol,
+          isDue: duePositionSymbols.has(pos.symbol),
+          reason: 'Position filtered out of signals or does not meet entry criteria',
+        });
+      }
+      
       if (!targetAssets.includes(pos.symbol)) {
+        this.logger.debug(`Position not in targetAssets - checking exit criteria`, {
+          symbol: pos.symbol,
+          isInSignals,
+          targetAssets,
+        });
         // SLOW MOMENTUM PHILOSOPHY: Don't exit positions immediately
         // Positions need time to develop momentum. Only exit if:
         // 1. Position has been held for at least 2 cadence cycles (to give momentum time to develop)
@@ -940,21 +1033,41 @@ export class StrategyService {
         
         // DON'T exit profitable positions just because they're not in target - let winners run
         if (isProfitable && currentProfitPct > 1.5) {
-          this.logger.debug(`[TARGET EXIT SKIPPED] Position is profitable (${currentProfitPct.toFixed(2)}%), letting winner run even though not in target`, {
+          this.logger.log(`[TARGET EXIT SKIPPED] Position is profitable (${currentProfitPct.toFixed(2)}%), letting winner run even though not in target`, {
             symbol: pos.symbol,
             currentProfitPct: currentProfitPct.toFixed(2),
             targetAssets,
+            reason: 'Position is profitable, letting winner run',
           });
           continue; // Skip exit for profitable positions
         }
         
         // If position is too new, skip exit (let momentum develop)
-        if (positionAgeHours < minHoldHours) {
-          this.logger.debug(`[TARGET EXIT SKIPPED] Position too new - holding for momentum to develop`, {
+        // BUT: If position is not in signals at all, use a shorter minimum hold time (2 cycles instead of 4)
+        // This allows faster rotation out of positions that don't meet entry criteria
+        const effectiveMinHoldCycles = !isInSignals ? 2 : minHoldCycles; // 2 cycles (4-6 hours) if not in signals, 4 cycles otherwise
+        const effectiveMinHoldHours = cadenceHours * effectiveMinHoldCycles;
+        
+        this.logger.log(`[TARGET EXIT CHECK] Evaluating exit for position not in target`, {
+          symbol: pos.symbol,
+          isInSignals,
+          positionAgeHours: positionAgeHours.toFixed(2),
+          effectiveMinHoldHours: effectiveMinHoldHours.toFixed(2),
+          currentProfitPct: currentProfitPct.toFixed(2),
+          isProfitable,
+        });
+        
+        if (positionAgeHours < effectiveMinHoldHours) {
+          const hoursRemaining = effectiveMinHoldHours - positionAgeHours;
+          this.logger.log(`[TARGET EXIT SKIPPED] Position too new - ${pos.symbol}: held ${positionAgeHours.toFixed(1)}h, need ${effectiveMinHoldHours.toFixed(1)}h (${effectiveMinHoldCycles} cycles), ${hoursRemaining.toFixed(1)}h remaining`, {
             symbol: pos.symbol,
             positionAgeHours: positionAgeHours.toFixed(2),
-            minHoldHours: minHoldHours.toFixed(2),
+            minHoldHours: effectiveMinHoldHours.toFixed(2),
+            hoursRemaining: hoursRemaining.toFixed(2),
+            effectiveMinHoldCycles,
+            isInSignals,
             cadenceHours,
+            reason: `Minimum hold time not met (need ${effectiveMinHoldCycles} cycles = ${effectiveMinHoldHours.toFixed(1)}h, currently held ${positionAgeHours.toFixed(1)}h)`,
           });
           continue; // Skip this position - too new to exit
         }
@@ -1004,7 +1117,7 @@ export class StrategyService {
             // Set cooldown to prevent immediate re-entry after selling
             this.cooldownMap.set(pos.symbol, cooldownCycles);
           } else {
-            this.logger.debug(`[TARGET EXIT SKIPPED] Position not in target but exit would be too costly`, {
+            this.logger.log(`[TARGET EXIT SKIPPED] Position not in target but exit would be too costly`, {
               symbol: pos.symbol,
               entryPrice: entryPrice.toFixed(4),
               currentPrice: currentPrice.toFixed(4),
@@ -1013,6 +1126,7 @@ export class StrategyService {
               netProfit: netProfit.toFixed(4),
               maxAcceptableLoss: maxAcceptableLoss.toFixed(4),
               positionAgeHours: positionAgeHours.toFixed(2),
+              reason: 'Exit loss exceeds acceptable threshold (1.5%)',
             });
           }
         } catch (error: any) {
@@ -1029,7 +1143,7 @@ export class StrategyService {
     // This ensures we can buy into better signals when we rotate out of underperforming positions
     const exitCount = trades.filter(t => t.side === 'sell').length;
     if (exitCount > 0) {
-      const newAvailableSlots = Math.max(0, maxPositions - (currentPositionCount - exitCount));
+      const newAvailableSlots = Math.max(0, maxPositions - (adjustedPositionCount - exitCount));
       // Filter out held positions from signals before selecting top K
       const availableSignalsAfterExit = signals.filter(s => !currentHoldings.has(s.symbol));
       const newTopK = Math.min(newAvailableSlots, availableSignalsAfterExit.length);

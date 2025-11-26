@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { Select } from './ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
+import { RefreshCw, AlertTriangle, AlertCircle, Info, XCircle } from 'lucide-react';
 
 const API_BASE = '/api';
 
@@ -44,33 +50,18 @@ function Alerts() {
     }
   };
 
-  const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case 'critical':
-        return '#dc2626'; // red
-      case 'error':
-        return '#ea580c'; // orange
-      case 'warning':
-        return '#f59e0b'; // amber
-      case 'info':
-        return '#3b82f6'; // blue
-      default:
-        return '#6b7280'; // gray
-    }
-  };
-
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
       case 'critical':
-        return '🚨';
+        return <XCircle className="h-4 w-4" />;
       case 'error':
-        return '❌';
+        return <AlertCircle className="h-4 w-4" />;
       case 'warning':
-        return '⚠️';
+        return <AlertTriangle className="h-4 w-4" />;
       case 'info':
-        return 'ℹ️';
+        return <Info className="h-4 w-4" />;
       default:
-        return '📢';
+        return <Info className="h-4 w-4" />;
     }
   };
 
@@ -87,7 +78,7 @@ function Alerts() {
   };
 
   if (loading && alerts.length === 0) {
-    return <div className="card">Loading alerts...</div>;
+    return <Card><CardContent className="pt-6">Loading alerts...</CardContent></Card>;
   }
 
   const filteredAlerts = alerts;
@@ -97,160 +88,136 @@ function Alerts() {
   const infoCount = alerts.filter(a => a.severity === 'info').length;
 
   return (
-    <div>
-      <div className="card" style={{ marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h2 style={{ margin: 0 }}>Alert History</h2>
-          {lastUpdate && (
-            <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-              Last updated: {lastUpdate.toLocaleTimeString()}
-            </span>
-          )}
-        </div>
-
-        {/* Alert Statistics */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-          <div style={{ padding: '1rem', background: '#fee2e2', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#dc2626' }}>{criticalCount}</div>
-            <div style={{ fontSize: '0.875rem', color: '#991b1b' }}>Critical</div>
-          </div>
-          <div style={{ padding: '1rem', background: '#ffedd5', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#ea580c' }}>{errorCount}</div>
-            <div style={{ fontSize: '0.875rem', color: '#c2410c' }}>Errors</div>
-          </div>
-          <div style={{ padding: '1rem', background: '#fef3c7', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#f59e0b' }}>{warningCount}</div>
-            <div style={{ fontSize: '0.875rem', color: '#d97706' }}>Warnings</div>
-          </div>
-          <div style={{ padding: '1rem', background: '#dbeafe', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#3b82f6' }}>{infoCount}</div>
-            <div style={{ fontSize: '0.875rem', color: '#1e40af' }}>Info</div>
-          </div>
-        </div>
-
-        {/* Filter */}
-        <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <label style={{ marginRight: '0.5rem', fontSize: '0.875rem' }}>Filter by type:</label>
-            <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              style={{
-                padding: '0.5rem',
-                borderRadius: '4px',
-                border: '1px solid #d1d5db',
-                fontSize: '0.875rem',
-              }}
-            >
-              <option value="all">All Alerts</option>
-              <option value="ORDER_FAILURE">Order Failures</option>
-              <option value="EXCHANGE_UNREACHABLE">Exchange Unreachable</option>
-              <option value="LOW_BALANCE">Low Balance</option>
-              <option value="LARGE_DRAWDOWN">Large Drawdown</option>
-              <option value="JOB_FAILURE">Job Failures</option>
-              <option value="HEALTH_CHECK_FAILED">Health Check Failed</option>
-            </select>
-          </div>
-          {filter === 'ORDER_FAILURE' && (
-            <div style={{ 
-              padding: '0.75rem', 
-              background: 'rgba(59, 130, 246, 0.1)', 
-              border: '1px solid rgba(59, 130, 246, 0.3)', 
-              borderRadius: '6px',
-              fontSize: '0.75rem',
-              color: '#93c5fd',
-              maxWidth: '500px'
-            }}>
-              <strong>Common causes:</strong> Slippage too high, insufficient balance, exchange API error, network timeout, or order size below minimum.
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>Alert History</CardTitle>
+            <div className="flex items-center gap-2">
+              {lastUpdate && (
+                <span className="text-sm text-muted-foreground">
+                  Last updated: {lastUpdate.toLocaleTimeString()}
+                </span>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchAlerts}
+                disabled={loading}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+                Refresh
+              </Button>
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {/* Alert Statistics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+            <div className="p-4 bg-card border border-border rounded-lg text-center">
+              <div className="text-2xl font-bold text-muted-foreground">{criticalCount}</div>
+              <div className="text-sm text-muted-foreground mt-1">Critical</div>
+            </div>
+            <div className="p-4 bg-card border border-border rounded-lg text-center">
+              <div className="text-2xl font-bold text-muted-foreground">{errorCount}</div>
+              <div className="text-sm text-muted-foreground mt-1">Errors</div>
+            </div>
+            <div className="p-4 bg-card border border-border rounded-lg text-center">
+              <div className="text-2xl font-bold text-orange-400">{warningCount}</div>
+              <div className="text-sm text-muted-foreground mt-1">Warnings</div>
+            </div>
+            <div className="p-4 bg-card border border-border rounded-lg text-center">
+              <div className="text-2xl font-bold text-orange-400">{infoCount}</div>
+              <div className="text-sm text-muted-foreground mt-1">Info</div>
+            </div>
+          </div>
+
+          {/* Filter */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-muted-foreground">Filter by type:</label>
+              <Select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              >
+                <option value="all">All Alerts</option>
+                <option value="ORDER_FAILURE">Order Failures</option>
+                <option value="EXCHANGE_UNREACHABLE">Exchange Unreachable</option>
+                <option value="LOW_BALANCE">Low Balance</option>
+                <option value="LARGE_DRAWDOWN">Large Drawdown</option>
+                <option value="JOB_FAILURE">Job Failures</option>
+                <option value="HEALTH_CHECK_FAILED">Health Check Failed</option>
+              </Select>
+            </div>
+            {filter === 'ORDER_FAILURE' && (
+              <div className="p-3 bg-muted/50 border border-border rounded-md text-xs text-muted-foreground max-w-md">
+                <strong>Common causes:</strong> Slippage too high, insufficient balance, exchange API error, network timeout, or order size below minimum.
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Alerts Table */}
-      <div className="card">
-        {filteredAlerts.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '2rem', color: '#9ca3af' }}>
-            No alerts found
-          </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#6b7280' }}>Severity</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#6b7280' }}>Type</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#6b7280' }}>Title</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#6b7280' }}>Message</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#6b7280' }}>Status</th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#6b7280' }}>Time</th>
-                </tr>
-              </thead>
-              <tbody>
+      <Card>
+        <CardContent>
+          {filteredAlerts.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground">
+              No alerts found
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Severity</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Message</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Time</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {filteredAlerts.map((alert) => (
-                  <tr key={alert.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                    <td style={{ padding: '0.75rem' }}>
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '0.25rem',
-                          padding: '0.25rem 0.5rem',
-                          borderRadius: '4px',
-                          fontSize: '0.875rem',
-                          fontWeight: '500',
-                          color: getSeverityColor(alert.severity),
-                          background: `${getSeverityColor(alert.severity)}15`,
-                        }}
+                  <TableRow key={alert.id}>
+                    <TableCell>
+                      <Badge 
+                        variant={alert.severity === 'warning' || alert.severity === 'info' ? 'success' : 'secondary'}
+                        className="gap-1.5"
                       >
-                        {getSeverityIcon(alert.severity)} {alert.severity.toUpperCase()}
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.75rem', fontSize: '0.875rem' }}>
-                      {getTypeLabel(alert.type)}
-                    </td>
-                    <td style={{ padding: '0.75rem', fontSize: '0.875rem', fontWeight: '500' }}>
-                      {alert.title}
-                    </td>
-                    <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: '#6b7280', maxWidth: '400px' }}>
-                      <div style={{ 
-                        whiteSpace: 'pre-wrap', 
-                        wordBreak: 'break-word',
-                        lineHeight: '1.5'
-                      }}>
+                        {getSeverityIcon(alert.severity)}
+                        {alert.severity.toUpperCase()}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-sm">{getTypeLabel(alert.type)}</TableCell>
+                    <TableCell className="text-sm font-medium">{alert.title}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground max-w-md">
+                      <div className="whitespace-pre-wrap break-words leading-relaxed">
                         {alert.message}
                       </div>
                       {alert.metadata?.error && (
-                        <div style={{ 
-                          marginTop: '0.5rem', 
-                          padding: '0.5rem', 
-                          background: 'rgba(239, 68, 68, 0.1)', 
-                          borderRadius: '4px',
-                          fontSize: '0.75rem',
-                          color: '#fca5a5',
-                          fontFamily: 'monospace'
-                        }}>
+                        <div className="mt-2 p-2 bg-muted/50 border border-border rounded text-xs font-mono text-muted-foreground">
                           {alert.metadata.error}
                         </div>
                       )}
-                    </td>
-                    <td style={{ padding: '0.75rem' }}>
+                    </TableCell>
+                    <TableCell>
                       {alert.sent ? (
-                        <span style={{ color: '#10b981', fontSize: '0.875rem' }}>✓ Sent</span>
+                        <span className="text-sm text-orange-400">✓ Sent</span>
                       ) : (
-                        <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>Not sent</span>
+                        <span className="text-sm text-muted-foreground">Not sent</span>
                       )}
-                    </td>
-                    <td style={{ padding: '0.75rem', fontSize: '0.875rem', color: '#9ca3af' }}>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
                       {formatDate(alert.createdAt)}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

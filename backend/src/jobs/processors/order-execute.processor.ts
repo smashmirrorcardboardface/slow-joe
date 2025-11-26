@@ -9,6 +9,7 @@ import { MetricsService } from '../../metrics/metrics.service';
 import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
 import { JobsService } from '../jobs.service';
+import { SettingsService } from '../../settings/settings.service';
 import { buildBotUserref, getBotId, getUserrefPrefix } from '../../common/utils/bot.utils';
 
 @Processor('order-execute')
@@ -26,6 +27,7 @@ export class OrderExecuteProcessor extends WorkerHost {
     private logger: LoggerService,
     private alertsService: AlertsService,
     private jobsService: JobsService,
+    private settingsService: SettingsService,
   ) {
     super();
     this.logger.setContext('OrderExecuteProcessor');
@@ -228,6 +230,82 @@ export class OrderExecuteProcessor extends WorkerHost {
         ? ticker.ask * (1 - makerOffsetPct)
         : ticker.bid * (1 + makerOffsetPct);
 
+      // For buy orders, verify we have enough cash right before placing the order
+      // This prevents race conditions where multiple buy orders are generated in the same
+      // evaluation cycle and the exchange balance changes as previous orders lock funds
+      if (side === 'buy') {
+        try {
+          const usdBalance = await this.exchangeService.getBalance('USD');
+          const freeUsd = parseFloat(usdBalance.free.toString());
+          const lockedUsd = parseFloat(usdBalance.locked.toString());
+          
+          // Calculate order cost: quantity * price + estimated fees (0.5% for buy)
+          const orderValue = roundedQuantity * limitPrice;
+          const estimatedFee = orderValue * 0.005; // 0.5% fee estimate
+          const totalCost = orderValue + estimatedFee;
+          
+          // Add a small buffer (1% or $1, whichever is larger) to account for:
+          // - Actual fees may be slightly different
+          // - Price may have moved slightly
+          // - Rounding differences
+          const buffer = Math.max(totalCost * 0.01, 1.00);
+          const requiredCash = totalCost + buffer;
+          
+          if (freeUsd < requiredCash) {
+            // Check if we have enough when including locked funds (might be from other bots or pending orders)
+            const totalUsd = freeUsd + lockedUsd;
+            if (totalUsd < requiredCash) {
+              this.logger.warn(`[BUY ORDER SKIPPED] Insufficient USD balance. Required: $${requiredCash.toFixed(4)}, Free: $${freeUsd.toFixed(4)}, Locked: $${lockedUsd.toFixed(4)}, Total: $${totalUsd.toFixed(4)}`, {
+                jobId: job.id,
+                symbol,
+                side,
+                quantity: roundedQuantity.toFixed(8),
+                limitPrice: limitPrice.toFixed(4),
+                orderValue: orderValue.toFixed(4),
+                estimatedFee: estimatedFee.toFixed(4),
+                totalCost: totalCost.toFixed(4),
+                requiredCash: requiredCash.toFixed(4),
+                freeUsd: freeUsd.toFixed(4),
+                lockedUsd: lockedUsd.toFixed(4),
+                totalUsd: totalUsd.toFixed(4),
+              });
+              // Skip this order gracefully - likely a race condition where previous orders locked funds
+              return;
+            } else {
+              // We have enough total, but it's locked - log a warning but proceed
+              // The exchange will reject if truly insufficient
+              this.logger.warn(`[BUY ORDER WARNING] Free USD balance low, but total (including locked) is sufficient. Free: $${freeUsd.toFixed(4)}, Locked: $${lockedUsd.toFixed(4)}, Required: $${requiredCash.toFixed(4)}`, {
+                jobId: job.id,
+                symbol,
+                freeUsd: freeUsd.toFixed(4),
+                lockedUsd: lockedUsd.toFixed(4),
+                requiredCash: requiredCash.toFixed(4),
+              });
+            }
+          }
+          
+          this.logger.log(`[CASH CHECK PASSED] Sufficient USD balance for buy order`, {
+            jobId: job.id,
+            symbol,
+            quantity: roundedQuantity.toFixed(8),
+            limitPrice: limitPrice.toFixed(4),
+            orderValue: orderValue.toFixed(4),
+            totalCost: totalCost.toFixed(4),
+            requiredCash: requiredCash.toFixed(4),
+            freeUsd: freeUsd.toFixed(4),
+            lockedUsd: lockedUsd.toFixed(4),
+          });
+        } catch (cashError: any) {
+          // If cash check fails, log warning but proceed
+          // The exchange will reject the order if balance is truly insufficient
+          this.logger.warn(`Could not verify cash balance before buy order, proceeding anyway`, {
+            jobId: job.id,
+            symbol,
+            error: cashError.message,
+          });
+        }
+      }
+
       const clientOrderId = buildBotUserref(userrefPrefix);
       
       // Place limit order with rounded quantity
@@ -317,12 +395,29 @@ export class OrderExecuteProcessor extends WorkerHost {
 
         // Update position
         if (side === 'buy') {
-        await this.positionsService.createForBot({
+          // Check MAX_POSITIONS before creating position
+          const currentPositions = await this.positionsService.findOpenByBot(botId);
+          const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+          
+          if (currentPositions.length >= maxPositions) {
+            this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+              jobId: job.id,
+              symbol,
+              currentPositions: currentPositions.length,
+              maxPositions,
+              existingPositions: currentPositions.map(p => p.symbol),
+            });
+            // Don't create the position, but the trade is already recorded
+            // This is a safety check - ideally the strategy shouldn't have generated this order
+            return;
+          }
+          
+          await this.positionsService.createForBot({
             symbol,
             quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
             entryPrice: orderStatus.filledPrice?.toString() || limitPrice.toString(),
             status: 'open',
-        }, botId);
+          }, botId);
         } else {
           // Close position
           const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
@@ -388,6 +483,21 @@ export class OrderExecuteProcessor extends WorkerHost {
               exchangeOrderId: orderResult.orderId,
             });
             if (side === 'buy') {
+              // Check MAX_POSITIONS before creating position
+              const currentPositions = await this.positionsService.findOpenByBot(botId);
+              const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+              
+              if (currentPositions.length >= maxPositions) {
+                this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+                  jobId: job.id,
+                  symbol,
+                  currentPositions: currentPositions.length,
+                  maxPositions,
+                  existingPositions: currentPositions.map(p => p.symbol),
+                });
+                return;
+              }
+              
               await this.positionsService.createForBot({
                 symbol,
                 quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
@@ -492,6 +602,21 @@ export class OrderExecuteProcessor extends WorkerHost {
 
           // Update position
           if (side === 'buy') {
+            // Check MAX_POSITIONS before creating position
+            const currentPositions = await this.positionsService.findOpenByBot(botId);
+            const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+            
+            if (currentPositions.length >= maxPositions) {
+              this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+                jobId: job.id,
+                symbol,
+                currentPositions: currentPositions.length,
+                maxPositions,
+                existingPositions: currentPositions.map(p => p.symbol),
+              });
+              return;
+            }
+            
             await this.positionsService.createForBot({
               symbol,
               quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),

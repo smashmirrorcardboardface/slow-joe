@@ -10,6 +10,11 @@ import Backtest from './Backtest';
 import Alerts from './Alerts';
 import Metrics from './Metrics';
 import { useRealtime } from '../hooks/useRealtime';
+import { Button } from './ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Badge } from './ui/badge';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
+import { RefreshCw, Database, Radio, RotateCw, XCircle, CheckCircle, TrendingDown, TrendingUp, Briefcase, DollarSign, Clock, FileText, AlertCircle, ArrowRight } from 'lucide-react';
 import './Dashboard.css';
 
 const API_BASE = '/api';
@@ -614,8 +619,8 @@ function Dashboard() {
 
   const getChangeColor = (change: number | null) => {
     if (change === null) return '#9ca3af';
-    if (change > 0) return '#4ade80';
-    if (change < 0) return '#f5576c';
+    if (change > 0) return '#fb923c';
+    if (change < 0) return '#9ca3af';
     return '#9ca3af';
   };
 
@@ -624,22 +629,22 @@ function Dashboard() {
     
     const { ema12, ema26, rsi } = item.indicators;
     
-    if (!ema12 || !ema26 || !rsi) return { text: 'Calculating...', color: '#fbbf24' };
+    if (!ema12 || !ema26 || !rsi) return { text: 'Calculating...', color: '#9ca3af' };
     
     const emaBullish = ema12 > ema26;
     const rsiInRange = rsi >= 40 && rsi <= 70;
     
     if (emaBullish && rsiInRange) {
-      return { text: 'BUY Signal', color: '#4ade80' };
+      return { text: 'BUY Signal', color: '#fb923c' };
     }
     if (!emaBullish) {
-      return { text: 'Bearish', color: '#f5576c' };
+      return { text: 'Bearish', color: '#9ca3af' };
     }
     if (rsi > 70) {
-      return { text: 'Overbought', color: '#fbbf24' };
+      return { text: 'Overbought', color: '#9ca3af' };
     }
     if (rsi < 40) {
-      return { text: 'Oversold', color: '#fbbf24' };
+      return { text: 'Oversold', color: '#9ca3af' };
     }
     
     return { text: 'Neutral', color: '#9ca3af' };
@@ -826,514 +831,447 @@ function Dashboard() {
 
   const summary = generateSummary();
 
+  const getIconForEmoji = (text: string) => {
+    if (text.startsWith('✅')) return <CheckCircle className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    if (text.startsWith('📉')) return <TrendingDown className="h-3 w-3 inline mr-1.5 text-red-400" />;
+    if (text.startsWith('📈')) return <TrendingUp className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    if (text.startsWith('💼')) return <Briefcase className="h-3 w-3 inline mr-1.5 text-orange-400" />;
+    if (text.startsWith('🔄')) return <RefreshCw className="h-3 w-3 inline mr-1.5 text-blue-400" />;
+    if (text.startsWith('💰')) return <DollarSign className="h-3 w-3 inline mr-1.5 text-orange-400" />;
+    if (text.startsWith('⏰')) return <Clock className="h-3 w-3 inline mr-1.5 text-blue-400" />;
+    if (text.startsWith('📝')) return <FileText className="h-3 w-3 inline mr-1.5 text-gray-400" />;
+    if (text.startsWith('🔴')) return <AlertCircle className="h-3 w-3 inline mr-1.5 text-red-400" />;
+    if (text.startsWith('🟢')) return <CheckCircle className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    return null;
+  };
+
+  const removeEmoji = (text: string) => {
+    return text.replace(/^[✅📉📈💼🔄💰⏰📝🔴🟢→]/g, '').trim();
+  };
+
   return (
     <div className="dashboard">
       <header className="dashboard-header">
         <div>
           <h1>Slow Joe Trading Bot</h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <div style={{
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: healthStatus === 'healthy' ? '#4ade80' : healthStatus === 'unhealthy' ? '#f5576c' : '#fbbf24',
-              }}></div>
-              <span style={{ fontSize: '0.875rem', color: '#9ca3af' }}>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${
+                healthStatus === 'healthy' ? 'bg-orange-400' : 
+                healthStatus === 'unhealthy' ? 'bg-gray-500' : 
+                'bg-gray-400'
+              }`}></div>
+              <span className="text-sm text-muted-foreground">
                 {healthStatus === 'healthy' ? 'System Healthy' : healthStatus === 'unhealthy' ? 'Connection Issue' : 'Checking...'}
               </span>
             </div>
           </div>
         </div>
         <div className="header-actions">
-          <div className="strategy-toggle">
-            <span>Strategy:</span>
-            <button
-              className={`button ${strategyEnabled ? 'success' : 'danger'}`}
+          <div className="strategy-toggle flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Strategy:</span>
+            <Button
+              variant={strategyEnabled ? 'default' : 'destructive'}
+              size="sm"
               onClick={toggleStrategy}
             >
               {strategyEnabled ? 'Enabled' : 'Disabled'}
-            </button>
+            </Button>
           </div>
-          <button className="button" onClick={logout}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={logout}
+          >
             Logout
-          </button>
+          </Button>
         </div>
       </header>
 
-      <nav className="dashboard-nav">
-        <button
-          className={activeTab === 'dashboard' ? 'active' : ''}
-          onClick={() => setActiveTab('dashboard')}
-        >
-          Dashboard
-        </button>
-        <button
-          className={activeTab === 'signals' ? 'active' : ''}
-          onClick={() => setActiveTab('signals')}
-        >
-          Signals
-        </button>
-        <button
-          className={activeTab === 'positions' ? 'active' : ''}
-          onClick={() => setActiveTab('positions')}
-        >
-          Positions
-        </button>
-        <button
-          className={activeTab === 'trades' ? 'active' : ''}
-          onClick={() => setActiveTab('trades')}
-        >
-          Trades
-        </button>
-        <button
-          className={activeTab === 'alerts' ? 'active' : ''}
-          onClick={() => setActiveTab('alerts')}
-        >
-          Alerts
-        </button>
-        <button
-          className={activeTab === 'settings' ? 'active' : ''}
-          onClick={() => setActiveTab('settings')}
-        >
-          Settings
-        </button>
-            <button
-              className={activeTab === 'backtest' ? 'active' : ''}
-              onClick={() => setActiveTab('backtest')}
-            >
-              Backtest
-            </button>
-            <button
-              className={activeTab === 'metrics' ? 'active' : ''}
-              onClick={() => setActiveTab('metrics')}
-            >
-              Metrics
-            </button>
-          </nav>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <div className="border-b border-border bg-background">
+          <div className="px-6">
+            <TabsList className="h-auto p-1 bg-transparent">
+              <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+              <TabsTrigger value="signals">Signals</TabsTrigger>
+              <TabsTrigger value="positions">Positions</TabsTrigger>
+              <TabsTrigger value="trades">Trades</TabsTrigger>
+              <TabsTrigger value="alerts">Alerts</TabsTrigger>
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+              <TabsTrigger value="backtest">Backtest</TabsTrigger>
+              <TabsTrigger value="metrics">Metrics</TabsTrigger>
+            </TabsList>
+          </div>
+        </div>
 
-      <main className="dashboard-content">
-        {activeTab === 'dashboard' && (
+        <main className="dashboard-content">
+          <TabsContent value="dashboard" className="mt-0">
           <div>
             {/* Header Controls */}
-            <div className="card" style={{ marginBottom: '1.5rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <h2 style={{ margin: 0 }}>Dashboard</h2>
-                  {realtimeConnected && (
-                    <span style={{ 
-                      fontSize: '0.75rem', 
-                      color: '#4ade80',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.25rem'
-                    }}>
-                      <span style={{ 
-                        width: '8px', 
-                        height: '8px', 
-                        borderRadius: '50%', 
-                        backgroundColor: '#4ade80',
-                        display: 'inline-block',
-                        animation: 'pulse 2s infinite'
-                      }}></span>
-                      Live
-                    </span>
-                  )}
+            <Card className="mb-6">
+              <CardHeader>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-2xl">Dashboard</CardTitle>
+                    {realtimeConnected && (
+                      <Badge variant="success" className="gap-1.5">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-400"></span>
+                        </span>
+                        Live
+                      </Badge>
+                    )}
+                    {lastUpdate && (
+                      <span className="text-sm text-muted-foreground">
+                        Updated: {lastUpdate.toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-muted-foreground hover:text-foreground transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={autoRefresh}
+                        onChange={(e) => setAutoRefresh(e.target.checked)}
+                        className="cursor-pointer"
+                      />
+                      Auto-refresh
+                    </label>
+                    <div className="h-5 w-px bg-border"></div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={fetchDashboardData}
+                      disabled={loading}
+                    >
+                      <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+                      {loading ? 'Refreshing...' : 'Refresh'}
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={triggerReconcile}
+                      disabled={reconciling}
+                    >
+                      <Database className={`h-4 w-4 mr-2 ${reconciling ? 'animate-spin' : ''}`} />
+                      {reconciling ? 'Reconciling...' : 'Reconcile'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={triggerSignalPoller}
+                      disabled={triggeringSignalPoller || runningFullRefresh}
+                    >
+                      <Radio className={`h-4 w-4 mr-2 ${triggeringSignalPoller ? 'animate-spin' : ''}`} />
+                      {triggeringSignalPoller ? 'Generating...' : 'Signals'}
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={triggerFullRefresh}
+                      disabled={runningFullRefresh || reconciling || triggeringSignalPoller}
+                    >
+                      <RotateCw className={`h-4 w-4 mr-2 ${runningFullRefresh ? 'animate-spin' : ''}`} />
+                      {runningFullRefresh ? 'Running...' : 'Full Refresh'}
+                    </Button>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  {lastUpdate && (
-                    <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-                      Updated: {lastUpdate.toLocaleTimeString()}
-                    </span>
-                  )}
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={autoRefresh}
-                      onChange={(e) => setAutoRefresh(e.target.checked)}
-                      style={{ cursor: 'pointer' }}
-                    />
-                    <span style={{ fontSize: '0.875rem', color: '#9ca3af' }}>Auto-refresh</span>
-                  </label>
-                  {lastUpdate && (
-                    <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>
-                      Updated: {lastUpdate.toLocaleTimeString()}
-                    </span>
-                  )}
-                  <button
-                    className="button"
-                    onClick={fetchDashboardData}
-                    disabled={loading}
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
-                  >
-                    {loading ? 'Refreshing...' : 'Refresh'}
-                  </button>
-                  <button
-                    className="button success"
-                    onClick={triggerReconcile}
-                    disabled={reconciling}
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
-                  >
-                    {reconciling ? 'Reconciling...' : 'Reconcile Balance'}
-                  </button>
-                  <button
-                    className="button"
-                    onClick={triggerSignalPoller}
-                    disabled={triggeringSignalPoller || runningFullRefresh}
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
-                  >
-                    {triggeringSignalPoller ? 'Generating Signals...' : 'Generate Signals'}
-                  </button>
-                  <button
-                    className="button success"
-                    onClick={triggerFullRefresh}
-                    disabled={runningFullRefresh || reconciling || triggeringSignalPoller}
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
-                  >
-                    {runningFullRefresh ? 'Running Full Refresh...' : '🔄 Full Refresh (Reconcile + Signals + Trades)'}
-                  </button>
-                </div>
-              </div>
+              </CardHeader>
               {error && (
-                <div style={{ 
-                  background: 'rgba(239, 68, 68, 0.2)', 
-                  border: '1px solid rgba(239, 68, 68, 0.5)', 
-                  color: '#fca5a5', 
-                  padding: '0.75rem', 
-                  borderRadius: '8px', 
-                  marginBottom: '1rem' 
-                }}>
-                  {error}
+                <CardContent>
+                  <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+                    <div className="flex items-center gap-2">
+                      <XCircle className="h-5 w-5" />
+                      <span>{error}</span>
+                    </div>
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+
+            {/* Portfolio Metrics */}
+            <div className="mb-6">
+              <div className="flex flex-wrap justify-between gap-3">
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Net Asset Value</div>
+                  <div className={`text-base font-semibold ${metrics?.nav > 0 ? 'text-orange-400' : 'text-muted-foreground'}`}>
+                    ${metrics?.nav?.toFixed(2) || '0.00'}
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Total P&L</div>
+                  <div className={`text-base font-semibold ${
+                    metrics?.totalPnL > 0 ? 'text-orange-400' : 
+                    metrics?.totalPnL < 0 ? 'text-gray-400' : 
+                    'text-muted-foreground'
+                  }`}>
+                    ${metrics?.totalPnL?.toFixed(2) || '0.00'}
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Net Profit (After Fees)</div>
+                  <div className={`text-base font-semibold ${
+                    ((metrics?.totalPnL || 0) - (metrics?.totalFees || 0)) > 0 ? 'text-orange-400' : 
+                    ((metrics?.totalPnL || 0) - (metrics?.totalFees || 0)) < 0 ? 'text-gray-400' : 
+                    'text-muted-foreground'
+                  }`}>
+                    ${((metrics?.totalPnL || 0) - (metrics?.totalFees || 0)).toFixed(2)}
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Open Positions</div>
+                  <div className="text-base font-semibold">{metrics?.positions || 0}</div>
+                </div>
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Recent Trades</div>
+                  <div className="text-base font-semibold">{metrics?.recentTrades || 0}</div>
+                </div>
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Open Orders</div>
+                  <div className={`text-base font-semibold ${openOrders.length > 0 ? 'text-orange-400' : 'text-muted-foreground'}`}>
+                    {openOrders.length}
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                  <div className="text-xs text-muted-foreground mb-1">Total Fees</div>
+                  <div className="text-base font-semibold text-gray-400">
+                    ${metrics?.totalFees?.toFixed(4) || '0.0000'}
+                  </div>
+                </div>
+                {metrics?.winRate !== undefined && (
+                  <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                    <div className="text-xs text-muted-foreground mb-1">Win Rate</div>
+                    <div className={`text-base font-semibold ${
+                      metrics.winRate >= 50 ? 'text-orange-400' : 
+                      metrics.winRate >= 40 ? 'text-gray-300' : 
+                      'text-gray-500'
+                    }`}>
+                      {metrics.winRate.toFixed(1)}%
+                    </div>
+                  </div>
+                )}
+                {metrics?.roi !== undefined && (
+                  <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                    <div className="text-xs text-muted-foreground mb-1">ROI</div>
+                    <div className={`text-base font-semibold ${
+                      metrics.roi > 0 ? 'text-orange-400' : 
+                      metrics.roi < 0 ? 'text-gray-400' : 
+                      'text-muted-foreground'
+                    }`}>
+                      {metrics.roi > 0 ? '+' : ''}{metrics.roi.toFixed(2)}%
+                    </div>
+                  </div>
+                )}
+                {metrics?.nav !== undefined && (
+                  <div className="flex-1 min-w-[120px] px-3 py-2 rounded-md border border-border bg-card">
+                    <div className="text-xs text-muted-foreground mb-1">Available Cash</div>
+                    <div className="text-base font-semibold text-orange-400">
+                      ${(metrics.nav - (metrics.openPositions?.reduce((sum: number, pos: any) => sum + (parseFloat(pos.positionValue) || 0), 0) || 0)).toFixed(2)}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {metrics?.nav === 0 && (
+                <div className="mt-6 pt-6 border-t border-border text-sm text-muted-foreground">
+                  Click "Reconcile Balance" to fetch from exchange
                 </div>
               )}
             </div>
 
-            {/* Portfolio Metrics */}
-            <div className="grid" style={{ marginBottom: '1.5rem' }}>
-              <div className="metric card">
-                <div className="metric-label">Net Asset Value</div>
-                <div className="metric-value" style={{ color: metrics?.nav > 0 ? '#4ade80' : '#9ca3af' }}>
-                  ${metrics?.nav?.toFixed(2) || '0.00'}
-                </div>
-                {metrics?.nav === 0 && (
-                  <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.5rem' }}>
-                    Click "Reconcile Balance" to fetch from exchange
-                  </div>
-                )}
-              </div>
-              <div className="metric card">
-                <div className="metric-label">Total P&L</div>
-                <div className="metric-value" style={{ 
-                  color: metrics?.totalPnL > 0 ? '#4ade80' : metrics?.totalPnL < 0 ? '#f5576c' : '#9ca3af' 
-                }}>
-                  ${metrics?.totalPnL?.toFixed(2) || '0.00'}
-                </div>
-              </div>
-              <div className="metric card">
-                <div className="metric-label">Open Positions</div>
-                <div className="metric-value">{metrics?.positions || 0}</div>
-              </div>
-              <div className="metric card">
-                <div className="metric-label">Recent Trades</div>
-                <div className="metric-value">{metrics?.recentTrades || 0}</div>
-              </div>
-              <div className="metric card">
-                <div className="metric-label">Open Orders</div>
-                <div className="metric-value" style={{ color: openOrders.length > 0 ? '#60a5fa' : '#9ca3af' }}>
-                  {openOrders.length}
-                </div>
-              </div>
-              <div className="metric card">
-                <div className="metric-label">Total Fees</div>
-                <div className="metric-value" style={{ color: '#fbbf24' }}>
-                  ${metrics?.totalFees?.toFixed(4) || '0.0000'}
-                </div>
-              </div>
-            </div>
 
-            {/* Owned Assets */}
-            {metrics?.openPositions && metrics.openPositions.length > 0 && (
-              <div className="card" style={{ marginBottom: '1.5rem' }}>
-                <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', fontWeight: '600' }}>💼 Owned Assets</h3>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                        <th style={{ padding: '0.75rem', textAlign: 'left', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>Asset</th>
-                        <th style={{ padding: '0.75rem', textAlign: 'right', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>Quantity</th>
-                        <th style={{ padding: '0.75rem', textAlign: 'right', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>Entry Price</th>
-                        <th style={{ padding: '0.75rem', textAlign: 'right', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>Current Price</th>
-                        <th style={{ padding: '0.75rem', textAlign: 'right', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>Current Value</th>
-                        <th style={{ padding: '0.75rem', textAlign: 'right', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>P&L</th>
-                        <th style={{ padding: '0.75rem', textAlign: 'right', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af' }}>P&L %</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {metrics.openPositions.map((position: any) => {
-                        const quantity = parseFloat(position.quantity);
-                        const entryPrice = parseFloat(position.entryPrice);
-                        const marketItem = marketData.find(m => m.symbol === position.symbol);
-                        const currentPrice = marketItem?.price || entryPrice;
-                        const currentValue = quantity * currentPrice;
-                        const pnl = currentValue - (quantity * entryPrice);
-                        const pnlPercent = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
+            {/* Trading Summary & Insights + Recent Activity */}
+            <div className="flex flex-col lg:flex-row gap-6 mb-6">
+              {/* Trading Summary & Insights + Next Jobs */}
+              <div className="card flex-1">
+                <h3 className="text-base font-semibold mb-3 flex items-center gap-2">
+                <Database className="h-4 w-4" />
+                Trading Summary & Insights
+              </h3>
+                
+                <div className="mb-4">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Current Market Analysis
+                  </h4>
+                  <div className="flex flex-col gap-2">
+                    {summary.insights.length > 0 ? (
+                      summary.insights.map((insight, idx) => (
+                        <div 
+                          key={idx}
+                          className="px-2 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded text-xs leading-relaxed text-foreground flex items-start gap-1.5"
+                        >
+                          {getIconForEmoji(insight)}
+                          <span>{removeEmoji(insight)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-muted-foreground italic">
+                        Analyzing market data...
+                      </div>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="mb-4">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Recommended Actions
+                  </h4>
+                  <div className="flex flex-col gap-2">
+                    {summary.actions.length > 0 ? (
+                      summary.actions.map((action, idx) => (
+                        <div 
+                          key={idx}
+                          className="px-2 py-1.5 bg-green-500/10 border border-green-500/20 rounded text-xs leading-relaxed text-green-100 flex items-start gap-1.5"
+                        >
+                          <ArrowRight className="h-3 w-3 mt-0.5 text-green-400" />
+                          <span>{action}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-muted-foreground italic">
+                        No specific actions recommended at this time.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Trading Performance Summary */}
+                {(() => {
+                  const perfSummary = calculateTradingSummary();
+                  if (perfSummary.totalTrades === 0 && tradeHistory.length === 0) return null;
+                  
+                  return (
+                    <div className="pt-4 border-t border-border">
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-2">
+                        <TrendingUp className="h-3 w-3" />
+                        Trading Performance Summary
+                      </h4>
+                      <div className={`p-3 rounded-md mb-3 ${
+                        perfSummary.netProfit > 0 
+                          ? 'bg-green-500/10 border border-green-500/20' 
+                          : perfSummary.netProfit < 0 
+                          ? 'bg-red-500/10 border border-red-500/20' 
+                          : 'bg-muted/50 border border-border'
+                      }`}>
+                        <div className={`text-sm font-semibold mb-2 ${
+                          perfSummary.netProfit > 0 ? 'text-orange-400' : 
+                          perfSummary.netProfit < 0 ? 'text-gray-400' : 
+                          'text-muted-foreground'
+                        }`}>
+                          {perfSummary.summary}
+                        </div>
                         
-                        return (
-                          <tr key={position.id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
-                            <td style={{ padding: '0.75rem' }}>
-                              <strong style={{ color: '#e5e7eb' }}>{position.symbol}</strong>
-                            </td>
-                            <td style={{ padding: '0.75rem', textAlign: 'right', color: '#e5e7eb' }}>
-                              {quantity.toFixed(8)}
-                            </td>
-                            <td style={{ padding: '0.75rem', textAlign: 'right', color: '#9ca3af' }}>
-                              ${entryPrice.toFixed(2)}
-                            </td>
-                            <td style={{ padding: '0.75rem', textAlign: 'right', color: '#e5e7eb' }}>
-                              ${currentPrice.toFixed(2)}
-                            </td>
-                            <td style={{ padding: '0.75rem', textAlign: 'right', color: '#e5e7eb', fontWeight: '500' }}>
-                              ${currentValue.toFixed(2)}
-                            </td>
-                            <td style={{ 
-                              padding: '0.75rem', 
-                              textAlign: 'right', 
-                              fontWeight: '600',
-                              color: pnl > 0 ? '#4ade80' : pnl < 0 ? '#f5576c' : '#9ca3af'
-                            }}>
-                              {pnl > 0 ? '+' : ''}${pnl.toFixed(2)}
-                            </td>
-                            <td style={{ 
-                              padding: '0.75rem', 
-                              textAlign: 'right',
-                              color: pnlPercent > 0 ? '#4ade80' : pnlPercent < 0 ? '#f5576c' : '#9ca3af'
-                            }}>
-                              {pnlPercent > 0 ? '+' : ''}{pnlPercent.toFixed(2)}%
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr style={{ borderTop: '2px solid rgba(255, 255, 255, 0.2)', backgroundColor: 'rgba(59, 130, 246, 0.1)' }}>
-                        <td colSpan={4} style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '600', color: '#e5e7eb' }}>
-                          Total Portfolio Value:
-                        </td>
-                        <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '700', fontSize: '1.125rem', color: '#e5e7eb' }}>
-                          ${metrics.openPositions.reduce((total: number, position: any) => {
-                            const quantity = parseFloat(position.quantity);
-                            const marketItem = marketData.find(m => m.symbol === position.symbol);
-                            const currentPrice = marketItem?.price || parseFloat(position.entryPrice);
-                            return total + (quantity * currentPrice);
-                          }, 0).toFixed(2)}
-                        </td>
-                        <td style={{ padding: '0.75rem', textAlign: 'right', fontWeight: '600', color: '#e5e7eb' }}>
-                          {(() => {
-                            const totalPnL = metrics.openPositions.reduce((total: number, position: any) => {
-                              const quantity = parseFloat(position.quantity);
-                              const entryPrice = parseFloat(position.entryPrice);
-                              const marketItem = marketData.find(m => m.symbol === position.symbol);
-                              const currentPrice = marketItem?.price || entryPrice;
-                              return total + (quantity * currentPrice) - (quantity * entryPrice);
-                            }, 0);
-                            return (
-                              <span style={{ 
-                                color: totalPnL > 0 ? '#4ade80' : totalPnL < 0 ? '#f5576c' : '#9ca3af',
-                                fontWeight: '600'
-                              }}>
-                                {totalPnL > 0 ? '+' : ''}${totalPnL.toFixed(2)}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td style={{ padding: '0.75rem' }}></td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Trading Summary & Insights */}
-            <div className="card" style={{ marginBottom: '1.5rem' }}>
-              <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.125rem', fontWeight: '600' }}>📊 Trading Summary & Insights</h3>
-              
-              <div style={{ marginBottom: '1.5rem' }}>
-                <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Current Market Analysis
-                </h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {summary.insights.length > 0 ? (
-                    summary.insights.map((insight, idx) => (
-                      <div 
-                        key={idx}
-                        style={{
-                          padding: '0.75rem',
-                          background: 'rgba(59, 130, 246, 0.1)',
-                          border: '1px solid rgba(59, 130, 246, 0.2)',
-                          borderRadius: '6px',
-                          fontSize: '0.875rem',
-                          lineHeight: '1.5',
-                          color: '#e5e7eb',
-                        }}
-                      >
-                        {insight}
+                        {perfSummary.reasons.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+                              Key Factors:
+                            </div>
+                            <ul className="list-none pl-0 space-y-1">
+                              {perfSummary.reasons.map((reason, idx) => (
+                                <li key={idx} className="text-xs text-muted-foreground flex items-start gap-1.5">
+                                  <span className="text-orange-400 mt-0.5">•</span>
+                                  <span>{reason}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </div>
-                    ))
-                  ) : (
-                    <div style={{ color: '#9ca3af', fontSize: '0.875rem', fontStyle: 'italic' }}>
-                      Analyzing market data...
                     </div>
-                  )}
-                </div>
-              </div>
-              
-              <div>
-                <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.875rem', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Recommended Actions
-                </h4>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {summary.actions.length > 0 ? (
-                    summary.actions.map((action, idx) => (
-                      <div 
-                        key={idx}
-                        style={{
-                          padding: '0.75rem',
-                          background: 'rgba(34, 197, 94, 0.1)',
-                          border: '1px solid rgba(34, 197, 94, 0.2)',
-                          borderRadius: '6px',
-                          fontSize: '0.875rem',
-                          lineHeight: '1.5',
-                          color: '#d1fae5',
-                          display: 'flex',
-                          alignItems: 'flex-start',
-                          gap: '0.5rem',
-                        }}
-                      >
-                        <span style={{ fontSize: '1rem' }}>→</span>
-                        <span>{action}</span>
+                  );
+                })()}
+
+                <div className="pt-4 border-t border-border">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Next Scheduled Jobs
+                  </h4>
+                  <div className="flex flex-col gap-2">
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1">Reconcile (Hourly)</div>
+                      <div className="text-sm font-medium">
+                        {jobTimes.reconcile.toLocaleTimeString()}
                       </div>
-                    ))
-                  ) : (
-                    <div style={{ color: '#9ca3af', fontSize: '0.875rem', fontStyle: 'italic' }}>
-                      No specific actions recommended at this time.
                     </div>
-                  )}
+                    <div>
+                      <div className="text-xs text-muted-foreground mb-1">Signal Poller (6h)</div>
+                      <div className="text-sm font-medium">
+                        {jobTimes.signalPoller.toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* Bot Status & Next Jobs */}
-            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', marginBottom: '1.5rem' }}>
-              <div className="card">
-                <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Bot Status</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>Strategy:</span>
-                    <span style={{ fontWeight: '600', color: strategyEnabled ? '#4ade80' : '#f5576c' }}>
-                      {strategyEnabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>Connection:</span>
-                    <span style={{ fontWeight: '600', color: healthStatus === 'healthy' ? '#4ade80' : '#f5576c' }}>
-                      {healthStatus === 'healthy' ? 'Connected' : 'Disconnected'}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>Auto-refresh:</span>
-                    <span style={{ fontWeight: '600', color: autoRefresh ? '#4ade80' : '#9ca3af' }}>
-                      {autoRefresh ? 'On' : 'Off'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div className="card">
-                <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Next Scheduled Jobs</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  <div>
-                    <div style={{ color: '#9ca3af', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Reconcile (Hourly)</div>
-                    <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
-                      {jobTimes.reconcile.toLocaleTimeString()}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ color: '#9ca3af', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Signal Poller (6h)</div>
-                    <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
-                      {jobTimes.signalPoller.toLocaleTimeString()}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Recent Activity Summary */}
-            {(metrics?.openPositions?.length > 0 || metrics?.recentTradesList?.length > 0 || openOrders.length > 0) && (
-              <div style={{ marginBottom: '1.5rem' }}>
-                <h2 style={{ marginBottom: '1rem' }}>Recent Activity</h2>
-                <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '1rem' }}>
+              {/* Recent Activity Summary */}
+              {(metrics?.openPositions?.length > 0 || metrics?.recentTradesList?.length > 0 || openOrders.length > 0) && (
+                <div className="card flex-1">
+                  <h3 className="text-base font-semibold mb-4">Recent Activity</h3>
+                
+                <div className="space-y-6">
                   {/* Open Positions */}
                   {metrics?.openPositions?.length > 0 && (
-                    <div className="card">
-                      <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Open Positions</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        {metrics.openPositions.map((pos: any) => (
-                          <div key={pos.id} style={{ 
-                            padding: '0.75rem', 
-                            background: 'rgba(255, 255, 255, 0.05)', 
-                            borderRadius: '8px',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center'
-                          }}>
-                            <div>
-                              <div style={{ fontWeight: '600', marginBottom: '0.25rem' }}>{pos.symbol}</div>
-                              <div style={{ fontSize: '0.875rem', color: '#9ca3af' }}>
-                                {parseFloat(pos.quantity).toFixed(8)} @ ${parseFloat(pos.entryPrice).toFixed(2)}
+                    <div>
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Open Positions</h4>
+                      <div className="flex flex-col gap-2">
+                        {metrics.openPositions.map((pos: any) => {
+                          const quantity = parseFloat(pos.quantity);
+                          const entryPrice = parseFloat(pos.entryPrice);
+                          const marketItem = marketData.find(m => m.symbol === pos.symbol);
+                          const currentPrice = marketItem?.price || entryPrice;
+                          const currentValue = quantity * currentPrice;
+                          const entryValue = quantity * entryPrice;
+                          const pnl = currentValue - entryValue;
+                          const pnlPercent = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
+                          
+                          return (
+                            <div key={pos.id} className="px-3 py-2.5 bg-muted/50 rounded-md">
+                              <div className="flex justify-between items-start mb-2">
+                                <div className="flex-1">
+                                  <div className="font-semibold mb-1">{pos.symbol}</div>
+                                  <div className="text-xs text-muted-foreground space-y-0.5">
+                                    <div>{parseFloat(pos.quantity).toFixed(8)} @ ${entryPrice.toFixed(2)} entry</div>
+                                    <div>Current: ${currentPrice.toFixed(2)}</div>
+                                    <div>Value: ${currentValue.toFixed(2)}</div>
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <div className={`font-bold text-2xl mb-1 ${pnl >= 0 ? 'text-orange-400' : 'text-gray-400'}`}>
+                                    {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                                  </div>
+                                  <div className={`text-lg font-semibold mb-2 ${pnlPercent >= 0 ? 'text-orange-400' : 'text-gray-400'}`}>
+                                    {pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(2)}%
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {formatDateTime(pos.openedAt, metrics?.openPositions)}
+                                  </div>
+                                </div>
                               </div>
                             </div>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
-                              {formatDateTime(pos.openedAt, metrics?.openPositions)}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
 
                   {/* Recent Trades */}
                   {metrics?.recentTradesList?.length > 0 && (
-                    <div className="card">
-                      <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Recent Trades</h3>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div className={metrics?.openPositions?.length > 0 ? "pt-4 border-t border-border" : ""}>
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recent Trades</h4>
+                      <div className="flex flex-col gap-2">
                         {metrics.recentTradesList.slice(0, 5).map((trade: any) => (
-                          <div key={trade.id} style={{ 
-                            padding: '0.75rem', 
-                            background: 'rgba(255, 255, 255, 0.05)', 
-                            borderRadius: '8px',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center'
-                          }}>
+                          <div key={trade.id} className="px-3 py-2 bg-muted/50 rounded-md flex justify-between items-center">
                             <div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                                <span style={{ fontWeight: '600' }}>{trade.symbol}</span>
-                                <span style={{
-                                  padding: '0.125rem 0.5rem',
-                                  borderRadius: '4px',
-                                  fontSize: '0.75rem',
-                                  fontWeight: '600',
-                                  backgroundColor: trade.side === 'buy' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(245, 87, 108, 0.2)',
-                                  color: trade.side === 'buy' ? '#4ade80' : '#f5576c',
-                                }}>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-semibold">{trade.symbol}</span>
+                                <Badge variant={trade.side === 'buy' ? 'success' : 'secondary'} className="text-xs">
                                   {trade.side.toUpperCase()}
-                                </span>
+                                </Badge>
                               </div>
-                              <div style={{ fontSize: '0.875rem', color: '#9ca3af' }}>
+                              <div className="text-sm text-muted-foreground">
                                 {parseFloat(trade.quantity).toFixed(8)} @ ${parseFloat(trade.price).toFixed(2)}
                               </div>
                             </div>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>
+                            <div className="text-xs text-muted-foreground">
                               {formatDateTime(trade.createdAt, metrics?.recentTradesList)}
                             </div>
                           </div>
@@ -1344,12 +1282,12 @@ function Dashboard() {
 
                   {/* Open Orders */}
                   {openOrders.length > 0 && (
-                    <div className="card">
-                      <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Open Orders</h3>
-                      <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.75rem', padding: '0.5rem', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '4px' }}>
+                    <div className={(metrics?.openPositions?.length > 0 || metrics?.recentTradesList?.length > 0) ? "pt-4 border-t border-border" : ""}>
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Open Orders</h4>
+                      <div className="text-xs text-muted-foreground mb-3 p-2 bg-blue-500/10 border border-blue-500/20 rounded">
                         ⏳ Limit orders placed 0.1% below market to get maker fees. They'll fill when price drops or convert to market orders after 15 minutes.
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      <div className="flex flex-col gap-2">
                         {openOrders.map((order: any) => {
                           const marketDataItem = marketData.find(m => m.symbol === order.symbol);
                           const currentPrice = marketDataItem?.price || marketDataItem?.bid || marketDataItem?.ask;
@@ -1357,61 +1295,39 @@ function Dashboard() {
                           const priceDiff = currentPrice && limitPrice ? ((currentPrice - limitPrice) / limitPrice) * 100 : null;
                           
                           return (
-                            <div key={order.orderId} style={{ 
-                              padding: '0.75rem', 
-                              background: 'rgba(59, 130, 246, 0.1)', 
-                              border: '1px solid rgba(59, 130, 246, 0.2)',
-                              borderRadius: '8px',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: '0.5rem'
-                            }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div key={order.orderId} className="px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-md flex flex-col gap-1.5">
+                              <div className="flex justify-between items-center">
                                 <div>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                                    <span style={{ fontWeight: '600' }}>{order.symbol}</span>
-                                    <span style={{
-                                      padding: '0.125rem 0.5rem',
-                                      borderRadius: '4px',
-                                      fontSize: '0.75rem',
-                                      fontWeight: '600',
-                                      backgroundColor: order.side === 'buy' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(245, 87, 108, 0.2)',
-                                      color: order.side === 'buy' ? '#4ade80' : '#f5576c',
-                                    }}>
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="font-semibold">{order.symbol}</span>
+                                    <Badge variant={order.side === 'buy' ? 'success' : 'secondary'} className="text-xs">
                                       {order.side.toUpperCase()}
-                                    </span>
-                                    <span style={{
-                                      padding: '0.125rem 0.5rem',
-                                      borderRadius: '4px',
-                                      fontSize: '0.75rem',
-                                      fontWeight: '600',
-                                      backgroundColor: 'rgba(59, 130, 246, 0.2)',
-                                      color: '#60a5fa',
-                                    }}>
+                                    </Badge>
+                                    <Badge variant="outline" className="text-xs">
                                       PENDING
-                                    </span>
+                                    </Badge>
                                   </div>
-                                  <div style={{ fontSize: '0.875rem', color: '#9ca3af' }}>
+                                  <div className="text-sm text-muted-foreground">
                                     {order.remainingQuantity?.toFixed(8) || order.quantity?.toFixed(8)} @ ${limitPrice?.toFixed(4) || 'N/A'}
                                   </div>
                                 </div>
-                                <div style={{ fontSize: '0.75rem', color: '#9ca3af', textAlign: 'right' }}>
+                                <div className="text-xs text-muted-foreground text-right">
                                   {order.openedAt ? formatDateTime(order.openedAt, openOrders) : 'N/A'}
                                 </div>
                               </div>
                               {currentPrice && limitPrice && priceDiff !== null && (
-                                <div style={{ fontSize: '0.75rem', color: '#9ca3af', padding: '0.5rem', background: 'rgba(0, 0, 0, 0.2)', borderRadius: '4px' }}>
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                                <div className="text-xs text-muted-foreground p-2 bg-black/20 rounded">
+                                  <div className="flex justify-between mb-1">
                                     <span>Limit Price:</span>
-                                    <span style={{ fontWeight: '600' }}>${limitPrice.toFixed(4)}</span>
+                                    <span className="font-semibold">${limitPrice.toFixed(4)}</span>
                                   </div>
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                                  <div className="flex justify-between mb-1">
                                     <span>Current {order.side === 'buy' ? 'Bid' : 'Ask'}:</span>
-                                    <span style={{ fontWeight: '600' }}>${currentPrice.toFixed(4)}</span>
+                                    <span className="font-semibold">${currentPrice.toFixed(4)}</span>
                                   </div>
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', color: priceDiff > 0.05 ? '#fbbf24' : '#9ca3af' }}>
+                                  <div className={`flex justify-between ${priceDiff > 0.05 ? 'text-orange-400' : 'text-muted-foreground'}`}>
                                     <span>Price Gap:</span>
-                                    <span style={{ fontWeight: '600' }}>
+                                    <span className="font-semibold">
                                       {priceDiff > 0 ? '+' : ''}{priceDiff.toFixed(3)}%
                                       {order.side === 'buy' && priceDiff > 0 && ' (waiting for price drop)'}
                                       {order.side === 'buy' && priceDiff <= 0 && ' (should fill soon)'}
@@ -1419,7 +1335,7 @@ function Dashboard() {
                                   </div>
                                 </div>
                               )}
-                              <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                              <div className="text-xs text-muted-foreground">
                                 Order ID: {order.orderId?.substring(0, 8)}...
                               </div>
                             </div>
@@ -1429,8 +1345,9 @@ function Dashboard() {
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+                </div>
+              )}
+            </div>
 
             {/* Performance Charts */}
             {(navHistory.length > 0 || tradeHistory.length > 0 || Object.keys(priceHistory).length > 0) && (
@@ -1441,12 +1358,12 @@ function Dashboard() {
                   {navHistory.length > 0 && (
                     <div className="card">
                       <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>NAV Over Time</h3>
-                      <ResponsiveContainer width="100%" height={250}>
+                      <ResponsiveContainer width="100%" height={180}>
                         <AreaChart data={navHistory}>
                           <defs>
                             <linearGradient id="navGradient" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#4ade80" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#4ade80" stopOpacity={0}/>
+                              <stop offset="5%" stopColor="#fb923c" stopOpacity={0.3}/>
+                              <stop offset="95%" stopColor="#fb923c" stopOpacity={0}/>
                             </linearGradient>
                           </defs>
                           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -1477,7 +1394,7 @@ function Dashboard() {
                           <Area 
                             type="monotone" 
                             dataKey="value" 
-                            stroke="#4ade80" 
+                            stroke="#fb923c" 
                             fillOpacity={1}
                             fill="url(#navGradient)"
                             strokeWidth={2}
@@ -1495,12 +1412,12 @@ function Dashboard() {
                     return (
                       <div className="card">
                         <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Profit/Loss & Fees Over Time</h3>
-                        <ResponsiveContainer width="100%" height={250}>
+                        <ResponsiveContainer width="100%" height={180}>
                           <ComposedChart data={pnlFeesData}>
                             <defs>
                               <linearGradient id="pnlGradient" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#4ade80" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#4ade80" stopOpacity={0}/>
+                                <stop offset="5%" stopColor="#fb923c" stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor="#fb923c" stopOpacity={0}/>
                               </linearGradient>
                             </defs>
                             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -1513,17 +1430,17 @@ function Dashboard() {
                             <YAxis 
                               yAxisId="left"
                               tickFormatter={(value) => `$${value.toFixed(2)}`}
-                              stroke="#4ade80"
+                              stroke="#fb923c"
                               style={{ fontSize: '0.75rem' }}
-                              label={{ value: 'Cumulative P&L ($)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#4ade80' } }}
+                              label={{ value: 'Cumulative P&L ($)', angle: -90, position: 'insideLeft', style: { textAnchor: 'middle', fill: '#fb923c' } }}
                             />
                             <YAxis 
                               yAxisId="right"
                               orientation="right"
                               tickFormatter={(value) => `$${value.toFixed(2)}`}
-                              stroke="#fbbf24"
+                              stroke="#9ca3af"
                               style={{ fontSize: '0.75rem' }}
-                              label={{ value: 'Cumulative Fees ($)', angle: 90, position: 'insideRight', style: { textAnchor: 'middle', fill: '#fbbf24' } }}
+                              label={{ value: 'Cumulative Fees ($)', angle: 90, position: 'insideRight', style: { textAnchor: 'middle', fill: '#9ca3af' } }}
                             />
                             <Tooltip 
                               contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px', color: '#e0e0e0' }}
@@ -1554,7 +1471,7 @@ function Dashboard() {
                               yAxisId="left"
                               type="monotone" 
                               dataKey="pnl" 
-                              stroke="#4ade80" 
+                              stroke="#fb923c" 
                               fillOpacity={0.3}
                               fill="url(#pnlGradient)"
                               strokeWidth={1}
@@ -1564,7 +1481,7 @@ function Dashboard() {
                               yAxisId="left"
                               type="monotone" 
                               dataKey="pnl" 
-                              stroke="#4ade80" 
+                              stroke="#fb923c" 
                               strokeWidth={2}
                               dot={false}
                               name="cumulativePnl"
@@ -1573,7 +1490,7 @@ function Dashboard() {
                               yAxisId="right"
                               type="monotone" 
                               dataKey="fees" 
-                              stroke="#fbbf24" 
+                              stroke="#9ca3af" 
                               strokeWidth={2}
                               dot={false}
                               name="fees"
@@ -1585,126 +1502,12 @@ function Dashboard() {
                     );
                   })()}
 
-                  {/* Trading Summary */}
-                  {(() => {
-                    const summary = calculateTradingSummary();
-                    if (summary.totalTrades === 0 && tradeHistory.length === 0) return null;
-                    
-                    return (
-                      <div className="card" style={{ gridColumn: '1 / -1' }}>
-                        <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>📊 Trading Performance Summary</h3>
-                        <div style={{ 
-                          padding: '1rem', 
-                          background: summary.netProfit > 0 
-                            ? 'rgba(34, 197, 94, 0.1)' 
-                            : summary.netProfit < 0 
-                            ? 'rgba(239, 68, 68, 0.1)' 
-                            : 'rgba(156, 163, 175, 0.1)',
-                          border: `1px solid ${summary.netProfit > 0 
-                            ? 'rgba(34, 197, 94, 0.3)' 
-                            : summary.netProfit < 0 
-                            ? 'rgba(239, 68, 68, 0.3)' 
-                            : 'rgba(156, 163, 175, 0.3)'}`,
-                          borderRadius: '8px',
-                          marginBottom: '1rem'
-                        }}>
-                          <div style={{ 
-                            fontSize: '1.125rem', 
-                            fontWeight: '600',
-                            color: summary.netProfit > 0 ? '#4ade80' : summary.netProfit < 0 ? '#f5576c' : '#9ca3af',
-                            marginBottom: '0.75rem'
-                          }}>
-                            {summary.summary}
-                          </div>
-                          
-                          {summary.reasons.length > 0 && (
-                            <div style={{ marginTop: '1rem' }}>
-                              <div style={{ 
-                                fontSize: '0.875rem', 
-                                fontWeight: '600', 
-                                color: '#9ca3af', 
-                                marginBottom: '0.5rem',
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.05em'
-                              }}>
-                                Key Factors:
-                              </div>
-                              <ul style={{ 
-                                margin: 0, 
-                                paddingLeft: '1.5rem',
-                                listStyle: 'none'
-                              }}>
-                                {summary.reasons.map((reason, idx) => (
-                                  <li key={idx} style={{ 
-                                    marginBottom: '0.5rem',
-                                    color: '#e0e0e0',
-                                    fontSize: '0.875rem',
-                                    lineHeight: '1.6',
-                                    position: 'relative',
-                                    paddingLeft: '1rem'
-                                  }}>
-                                    <span style={{ position: 'absolute', left: 0 }}>•</span>
-                                    {reason}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                        
-                        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem' }}>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Realized P&L</div>
-                            <div style={{ 
-                              fontSize: '1.25rem', 
-                              fontWeight: '600',
-                              color: summary.realizedPnL > 0 ? '#4ade80' : summary.realizedPnL < 0 ? '#f5576c' : '#9ca3af'
-                            }}>
-                              {summary.realizedPnL > 0 ? '+' : ''}${summary.realizedPnL.toFixed(2)}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Total Fees</div>
-                            <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#fbbf24' }}>
-                              ${summary.totalFees.toFixed(2)}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Net Profit/Loss</div>
-                            <div style={{ 
-                              fontSize: '1.25rem', 
-                              fontWeight: '600',
-                              color: summary.netProfit > 0 ? '#4ade80' : summary.netProfit < 0 ? '#f5576c' : '#9ca3af'
-                            }}>
-                              {summary.netProfit > 0 ? '+' : ''}${summary.netProfit.toFixed(2)}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Win Rate</div>
-                            <div style={{ 
-                              fontSize: '1.25rem', 
-                              fontWeight: '600',
-                              color: (summary.winRate ?? 0) >= 50 ? '#4ade80' : '#f5576c'
-                            }}>
-                              {(summary.winRate ?? 0).toFixed(1)}%
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Total Trades</div>
-                            <div style={{ fontSize: '1.25rem', fontWeight: '600', color: '#e0e0e0' }}>
-                              {summary.totalTrades}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
 
                   {/* Trade Timeline */}
                   {tradeHistory.length > 0 && (
                     <div className="card">
                       <h3 style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>Trade Timeline</h3>
-                      <ResponsiveContainer width="100%" height={250}>
+                      <ResponsiveContainer width="100%" height={180}>
                         <LineChart data={tradeHistory}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                           <XAxis 
@@ -1767,7 +1570,7 @@ function Dashboard() {
                         return (
                           <div key={symbol} className="card">
                             <h4 style={{ margin: '0 0 1rem 0', fontSize: '0.875rem' }}>{symbol} Price History</h4>
-                            <ResponsiveContainer width="100%" height={200}>
+                            <ResponsiveContainer width="100%" height={150}>
                               <AreaChart data={data}>
                                 <defs>
                                   <linearGradient id={`priceGradient-${symbol}`} x1="0" y1="0" x2="0" y2="1">
@@ -1809,7 +1612,7 @@ function Dashboard() {
                                     <ReferenceLine 
                                       key={idx}
                                       x={closestCandle.time} 
-                                      stroke={trade.side === 'buy' ? '#4ade80' : '#f5576c'} 
+                                      stroke={trade.side === 'buy' ? '#fb923c' : '#9ca3af'} 
                                       strokeDasharray="5 5"
                                       strokeWidth={2}
                                     />
@@ -1835,7 +1638,7 @@ function Dashboard() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
                       <h3 style={{ margin: 0, fontSize: '1.25rem' }}>{item.symbol}</h3>
                       {item.error ? (
-                        <span style={{ color: '#f5576c', fontSize: '0.875rem' }}>Error</span>
+                        <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>Error</span>
                       ) : (
                         <span
                           style={{
@@ -1853,7 +1656,7 @@ function Dashboard() {
                     </div>
 
                     {item.error ? (
-                      <div style={{ color: '#f5576c', fontSize: '0.875rem' }}>{item.error}</div>
+                      <div style={{ color: '#9ca3af', fontSize: '0.875rem' }}>{item.error}</div>
                     ) : (
                       <>
                         <div style={{ marginBottom: '1rem' }}>
@@ -1893,6 +1696,24 @@ function Dashboard() {
                               </div>
                             </div>
                             <div style={{ gridColumn: '1 / -1' }}>
+                              <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>EMA Ratio (12/26)</div>
+                              <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
+                                {item.indicators.ema12 && item.indicators.ema26 ? (
+                                  <>
+                                    <span style={{ 
+                                      color: (item.indicators.ema12 / item.indicators.ema26) >= 1.001 ? '#fb923c' : '#9ca3af',
+                                      fontWeight: '600'
+                                    }}>
+                                      {(item.indicators.ema12 / item.indicators.ema26).toFixed(6)}
+                                    </span>
+                                    <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#9ca3af' }}>
+                                      {(item.indicators.ema12 / item.indicators.ema26) >= 1.001 ? '(Bullish)' : '(Bearish)'}
+                                    </span>
+                                  </>
+                                ) : 'N/A'}
+                              </div>
+                            </div>
+                            <div style={{ gridColumn: '1 / -1' }}>
                               <div style={{ fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>RSI</div>
                               <div style={{ fontSize: '0.875rem', fontWeight: '500' }}>
                                 {item.indicators.rsi ? `${item.indicators.rsi.toFixed(2)}` : 'N/A'}
@@ -1912,17 +1733,17 @@ function Dashboard() {
               </div>
             </div>
           </div>
-        )}
-        
-        {/* Other tabs */}
-        {activeTab === 'signals' && <Signals />}
-        {activeTab === 'positions' && <Positions />}
-        {activeTab === 'trades' && <Trades />}
-        {activeTab === 'alerts' && <Alerts />}
-        {activeTab === 'settings' && <Settings />}
-        {activeTab === 'backtest' && <Backtest />}
-        {activeTab === 'metrics' && <Metrics />}
-      </main>
+          </TabsContent>
+          
+          <TabsContent value="signals" className="mt-0"><Signals /></TabsContent>
+          <TabsContent value="positions" className="mt-0"><Positions /></TabsContent>
+          <TabsContent value="trades" className="mt-0"><Trades /></TabsContent>
+          <TabsContent value="alerts" className="mt-0"><Alerts /></TabsContent>
+          <TabsContent value="settings" className="mt-0"><Settings /></TabsContent>
+          <TabsContent value="backtest" className="mt-0"><Backtest /></TabsContent>
+          <TabsContent value="metrics" className="mt-0"><Metrics /></TabsContent>
+        </main>
+      </Tabs>
     </div>
   );
 }

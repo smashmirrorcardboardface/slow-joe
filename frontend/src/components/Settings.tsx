@@ -373,7 +373,7 @@ function Settings() {
         </div>
 
         <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid #374151' }}>
-          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: '#60a5fa' }}>Advanced Exit Settings</h3>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: '#fb923c' }}>Advanced Exit Settings</h3>
         </div>
 
         <div>

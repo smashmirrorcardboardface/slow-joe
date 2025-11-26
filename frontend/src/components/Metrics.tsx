@@ -201,16 +201,16 @@ function Metrics() {
   // Prepare trade distribution data
   const tradeDistributionData = metrics
     ? [
-        { name: 'Buy', value: metrics.buyCount || 0, color: '#4ade80' },
-        { name: 'Sell', value: metrics.sellCount || 0, color: '#f5576c' },
+        { name: 'Buy', value: metrics.buyCount || 0, color: '#fb923c' },
+        { name: 'Sell', value: metrics.sellCount || 0, color: '#9ca3af' },
       ]
     : [];
 
   // Prepare win/loss distribution
   const winLossData = metrics
     ? [
-        { name: 'Winning', value: metrics.winningTrades || 0, color: '#4ade80' },
-        { name: 'Losing', value: metrics.losingTrades || 0, color: '#f5576c' },
+        { name: 'Winning', value: metrics.winningTrades || 0, color: '#fb923c' },
+        { name: 'Losing', value: metrics.losingTrades || 0, color: '#9ca3af' },
       ]
     : [];
 
@@ -268,7 +268,7 @@ function Metrics() {
       <div className="grid" style={{ marginBottom: '1.5rem' }}>
         <div className="metric card">
           <div className="metric-label">Net Asset Value</div>
-          <div className="metric-value" style={{ color: metrics?.nav > 0 ? '#4ade80' : '#9ca3af', fontSize: '1.5rem' }}>
+          <div className="metric-value" style={{ color: metrics?.nav > 0 ? '#fb923c' : '#9ca3af', fontSize: '1.5rem' }}>
             ${metrics?.nav?.toFixed(2) || '0.00'}
           </div>
           {metrics?.initialNav && (
@@ -280,7 +280,7 @@ function Metrics() {
         <div className="metric card">
           <div className="metric-label">Total P&L</div>
           <div className="metric-value" style={{ 
-            color: metrics?.totalPnL > 0 ? '#4ade80' : metrics?.totalPnL < 0 ? '#f5576c' : '#9ca3af',
+            color: metrics?.totalPnL > 0 ? '#fb923c' : metrics?.totalPnL < 0 ? '#9ca3af' : '#9ca3af',
             fontSize: '1.5rem'
           }}>
             ${metrics?.totalPnL?.toFixed(2) || '0.00'}
@@ -292,7 +292,7 @@ function Metrics() {
         <div className="metric card">
           <div className="metric-label">ROI</div>
           <div className="metric-value" style={{ 
-            color: metrics?.roi > 0 ? '#4ade80' : metrics?.roi < 0 ? '#f5576c' : '#9ca3af',
+            color: metrics?.roi > 0 ? '#fb923c' : metrics?.roi < 0 ? '#9ca3af' : '#9ca3af',
             fontSize: '1.5rem'
           }}>
             {metrics?.roi?.toFixed(2) || '0.00'}%
@@ -312,7 +312,7 @@ function Metrics() {
         <div className="metric card">
           <div className="metric-label">Win Rate</div>
           <div className="metric-value" style={{ 
-            color: metrics?.winRate >= 50 ? '#4ade80' : '#f5576c',
+            color: metrics?.winRate >= 50 ? '#fb923c' : '#9ca3af',
             fontSize: '1.5rem'
           }}>
             {metrics?.winRate?.toFixed(1) || '0.0'}%
@@ -324,7 +324,7 @@ function Metrics() {
         <div className="metric card">
           <div className="metric-label">Avg Profit/Trade</div>
           <div className="metric-value" style={{ 
-            color: metrics?.avgProfitPerTrade > 0 ? '#4ade80' : '#f5576c',
+            color: metrics?.avgProfitPerTrade > 0 ? '#fb923c' : '#9ca3af',
             fontSize: '1.5rem'
           }}>
             ${metrics?.avgProfitPerTrade?.toFixed(2) || '0.00'}
@@ -332,13 +332,13 @@ function Metrics() {
         </div>
         <div className="metric card">
           <div className="metric-label">Largest Win</div>
-          <div className="metric-value" style={{ color: '#4ade80', fontSize: '1.5rem' }}>
+          <div className="metric-value" style={{ color: '#fb923c', fontSize: '1.5rem' }}>
             ${metrics?.largestWin?.toFixed(2) || '0.00'}
           </div>
         </div>
         <div className="metric card">
           <div className="metric-label">Largest Loss</div>
-          <div className="metric-value" style={{ color: '#f5576c', fontSize: '1.5rem' }}>
+          <div className="metric-value" style={{ color: '#9ca3af', fontSize: '1.5rem' }}>
             ${metrics?.largestLoss?.toFixed(2) || '0.00'}
           </div>
         </div>
@@ -366,7 +366,7 @@ function Metrics() {
         <div className="metric card">
           <div className="metric-label">Net P&L / Fees</div>
           <div className="metric-value" style={{ 
-            color: metrics?.totalFees > 0 && metrics?.realizedPnL > metrics?.totalFees ? '#4ade80' : '#f5576c',
+            color: metrics?.totalFees > 0 && metrics?.realizedPnL > metrics?.totalFees ? '#fb923c' : '#9ca3af',
             fontSize: '1.5rem'
           }}>
             {(metrics?.totalFees > 0 ? (metrics.realizedPnL / metrics.totalFees).toFixed(2) : 'N/A')}x
@@ -474,13 +474,13 @@ function Metrics() {
                 />
                 <YAxis 
                   yAxisId="left"
-                  stroke="#4ade80"
+                  stroke="#fb923c"
                   tickFormatter={(value) => `$${value.toFixed(0)}`}
                 />
                 <YAxis 
                   yAxisId="right"
                   orientation="right"
-                  stroke="#fbbf24"
+                  stroke="#9ca3af"
                   tickFormatter={(value) => `$${value.toFixed(2)}`}
                 />
                 <Tooltip
@@ -501,8 +501,8 @@ function Metrics() {
                   yAxisId="left"
                   type="monotone"
                   dataKey="pnl"
-                  stroke="#4ade80"
-                  fill="#4ade80"
+                  stroke="#fb923c"
+                  fill="#fb923c"
                   fillOpacity={0.2}
                   name="Cumulative P&L"
                 />
@@ -510,7 +510,7 @@ function Metrics() {
                   yAxisId="right"
                   type="monotone"
                   dataKey="fees"
-                  stroke="#fbbf24"
+                  stroke="#9ca3af"
                   strokeWidth={2}
                   name="Cumulative Fees"
                 />
@@ -549,7 +549,7 @@ function Metrics() {
                   }}
                 />
                 <Legend />
-                <Bar dataKey="realized" fill="#4ade80" name="Realized" />
+                <Bar dataKey="realized" fill="#fb923c" name="Realized" />
                 <Bar dataKey="unrealized" fill="#3b82f6" name="Unrealized" />
               </BarChart>
             </ResponsiveContainer>
@@ -663,10 +663,10 @@ function Metrics() {
                     <td>${pos.currentPrice?.toFixed(4) || pos.entryPrice}</td>
                     <td>${pos.entryValue?.toFixed(2) || '0.00'}</td>
                     <td>${pos.positionValue?.toFixed(2) || '0.00'}</td>
-                    <td style={{ color: pos.profit >= 0 ? '#4ade80' : '#f5576c' }}>
+                    <td style={{ color: pos.profit >= 0 ? '#fb923c' : '#9ca3af' }}>
                       ${pos.profit?.toFixed(2) || '0.00'}
                     </td>
-                    <td style={{ color: pos.profitPct >= 0 ? '#4ade80' : '#f5576c' }}>
+                    <td style={{ color: pos.profitPct >= 0 ? '#fb923c' : '#9ca3af' }}>
                       {pos.profitPct?.toFixed(2) || '0.00'}%
                     </td>
                     <td>{new Date(pos.openedAt).toLocaleString()}</td>
@@ -697,13 +697,13 @@ function Metrics() {
                 {pnlBySymbolData.map((item) => (
                   <tr key={item.symbol}>
                     <td><strong>{item.symbol}</strong></td>
-                    <td style={{ color: item.realized >= 0 ? '#4ade80' : '#f5576c' }}>
+                    <td style={{ color: item.realized >= 0 ? '#fb923c' : '#9ca3af' }}>
                       ${item.realized.toFixed(2)}
                     </td>
-                    <td style={{ color: item.unrealized >= 0 ? '#4ade80' : '#f5576c' }}>
+                    <td style={{ color: item.unrealized >= 0 ? '#fb923c' : '#9ca3af' }}>
                       ${item.unrealized.toFixed(2)}
                     </td>
-                    <td style={{ color: item.total >= 0 ? '#4ade80' : '#f5576c', fontWeight: 'bold' }}>
+                    <td style={{ color: item.total >= 0 ? '#fb923c' : '#9ca3af', fontWeight: 'bold' }}>
                       ${item.total.toFixed(2)}
                     </td>
                     <td>{item.trades}</td>

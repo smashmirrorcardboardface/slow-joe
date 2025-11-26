@@ -4,6 +4,8 @@ import { JobsService } from '../src/jobs/jobs.service';
 import { ExchangeService } from '../src/exchange/exchange.service';
 import { PositionsService } from '../src/positions/positions.service';
 import { LoggerService } from '../src/logger/logger.service';
+import { ConfigService } from '@nestjs/config';
+import { getBotId } from '../src/common/utils/bot.utils';
 
 async function triggerReconcile() {
   const app = await NestFactory.createApplicationContext(AppModule);
@@ -11,14 +13,17 @@ async function triggerReconcile() {
   const exchangeService = app.get(ExchangeService);
   const positionsService = app.get(PositionsService);
   const logger = app.get(LoggerService);
+  const configService = app.get(ConfigService);
   logger.setContext('TriggerReconcile');
+
+  const botId = getBotId(configService);
 
   console.log('\n=== MANUAL RECONCILIATION ===\n');
 
   try {
     // First, show current state
     console.log('📊 Current Database Positions:');
-    const dbPositions = await positionsService.findOpen();
+    const dbPositions = await positionsService.findOpenByBot(botId);
     if (dbPositions.length === 0) {
       console.log('   No open positions in database\n');
     } else {
@@ -106,7 +111,7 @@ async function triggerReconcile() {
     }
 
     // If positions still exist after reconciliation, offer to close them manually
-    const finalPositions = await positionsService.findOpen();
+    const finalPositions = await positionsService.findOpenByBot(botId);
     if (finalPositions.length > 0) {
       console.log('⚠️  Some positions still exist after reconciliation.');
       console.log('   If Kraken shows no positions, you may want to close these manually.\n');

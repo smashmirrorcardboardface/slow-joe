@@ -114,45 +114,85 @@ export class OptimizationService {
       return tradeDate >= startDate && tradeDate < endDate;
     });
 
-    // Group trades by symbol and calculate profit from buy/sell pairs
-    const symbolTrades = new Map<string, Array<{ trade: any; isBuy: boolean }>>();
-    periodTrades.forEach(trade => {
-      if (!symbolTrades.has(trade.symbol)) {
-        symbolTrades.set(trade.symbol, []);
-      }
-      symbolTrades.get(trade.symbol)!.push({
-        trade,
-        isBuy: trade.side === 'buy',
-      });
-    });
+    // Sort ALL trades by time to properly match buys with sells (FIFO)
+    // We need all trades because a position might have been bought before the period
+    // but sold during the period - we need to match it correctly
+    const sortedTrades = [...allTrades].sort((a, b) => 
+      a.createdAt.getTime() - b.createdAt.getTime()
+    );
 
-    // Calculate profits from buy/sell pairs
+    // Use FIFO matching like the metrics service
+    const buyPositions: Array<{ symbol: string; quantity: number; price: number; fee: number; time: Date }> = [];
     const tradeProfits: number[] = [];
-    symbolTrades.forEach((trades, symbol) => {
-      // Simple pairing: match buys with sells in order
-      const buys: any[] = [];
-      trades.forEach(({ trade, isBuy }) => {
-        if (isBuy) {
-          buys.push(trade);
-        } else {
-          // Match with most recent buy
-          if (buys.length > 0) {
-            const buy = buys.shift()!;
-            const buyCost = parseFloat(buy.quantity) * parseFloat(buy.price) + parseFloat(buy.fee || '0');
-            const sellRevenue = parseFloat(trade.quantity) * parseFloat(trade.price) - parseFloat(trade.fee || '0');
-            const profit = sellRevenue - buyCost;
-            tradeProfits.push(profit);
+
+    for (const trade of sortedTrades) {
+      const symbol = trade.symbol;
+      const side = trade.side;
+      const quantity = parseFloat(trade.quantity);
+      const price = parseFloat(trade.price);
+      const fee = parseFloat(trade.fee || '0');
+      const tradeTime = trade.createdAt;
+
+      if (side === 'buy') {
+        // Add to buy positions (FIFO - add to end)
+        buyPositions.push({ symbol, quantity, price, fee, time: tradeTime });
+      } else if (side === 'sell') {
+        // Only count profits from sells that happened within the analysis period
+        const sellInPeriod = tradeTime >= startDate && tradeTime < endDate;
+        
+        // Match sell with buys in FIFO order (match from beginning)
+        let remainingQuantity = quantity;
+        let totalBuyCost = 0;
+        let matchedQuantity = 0;
+        const matchedBuys: Array<{ price: number; qty: number; fee: number }> = [];
+
+        for (let i = 0; i < buyPositions.length && remainingQuantity > 0; i++) {
+          const buy = buyPositions[i];
+          if (buy.symbol === symbol) {
+            const matched = Math.min(remainingQuantity, buy.quantity);
+            const matchedCost = matched * buy.price + (matched / buy.quantity) * buy.fee; // Proportional fee
+            const matchedFee = (matched / buy.quantity) * buy.fee;
+            totalBuyCost += matchedCost;
+            matchedQuantity += matched;
+            remainingQuantity -= matched;
+            
+            // Track matched buys for logging
+            matchedBuys.push({ price: buy.price, qty: matched, fee: matchedFee });
+            
+            buy.quantity -= matched;
+
+            if (buy.quantity <= 0) {
+              buyPositions.splice(i, 1);
+              i--;
+            }
           }
         }
-      });
-    });
+
+        // Only count profit if the sell happened within the analysis period
+        if (matchedQuantity > 0 && sellInPeriod) {
+          const sellRevenue = matchedQuantity * price - fee;
+          const profit = sellRevenue - totalBuyCost;
+          tradeProfits.push(profit);
+          
+          // Log for debugging
+          const profitStr = profit >= 0 ? `+$${profit.toFixed(4)}` : `-$${Math.abs(profit).toFixed(4)}`;
+          const buyDetails = matchedBuys.map(b => `${b.qty} @ $${b.price.toFixed(2)}`).join(' + ');
+          const totalFees = matchedBuys.reduce((sum, b) => sum + b.fee, 0) + fee;
+          this.logger.log(`Round trip: ${symbol} - Profit: ${profitStr} | Buy: ${buyDetails} → Sell: ${matchedQuantity} @ $${price.toFixed(2)} | Total fees: $${totalFees.toFixed(4)}`);
+        }
+      }
+    }
 
     const winningTrades = tradeProfits.filter(p => p > 0);
     const losingTrades = tradeProfits.filter(p => p < 0);
     const totalProfit = tradeProfits.reduce((sum, p) => sum + p, 0);
     const totalFees = periodTrades.reduce((sum, t) => sum + parseFloat(t.fee || '0'), 0);
-    const avgProfitPerTrade = tradeProfits.length > 0 ? totalProfit / tradeProfits.length : 0;
-    const winRate = tradeProfits.length > 0 ? (winningTrades.length / tradeProfits.length) * 100 : 0;
+    
+    // avgProfitPerTrade should be profit per completed round trip (buy/sell pair)
+    // totalTrades should also count completed round trips, not individual trades
+    const completedRoundTrips = tradeProfits.length;
+    const avgProfitPerTrade = completedRoundTrips > 0 ? totalProfit / completedRoundTrips : 0;
+    const winRate = completedRoundTrips > 0 ? (winningTrades.length / completedRoundTrips) * 100 : 0;
 
     // Calculate average hold time from positions
     const positions = await this.positionsService.findOpenByBot(botId);
@@ -178,10 +218,13 @@ export class OptimizationService {
     const endNav = navHistory.length > 0 ? navHistory[0].value : 0;
     const roi = startNav > 0 ? ((endNav - startNav) / startNav) * 100 : 0;
 
+    // Count individual trades for tradesPerDay (buy + sell orders)
     const tradesPerDay = periodTrades.length;
+    // But totalTrades should be completed round trips for consistency with avgProfitPerTrade
+    const totalCompletedTrades = completedRoundTrips;
 
     return {
-      totalTrades: periodTrades.length,
+      totalTrades: totalCompletedTrades, // Completed round trips, not individual orders
       winningTrades: winningTrades.length,
       losingTrades: losingTrades.length,
       winRate,
@@ -192,7 +235,7 @@ export class OptimizationService {
       avgHoldTimeHours,
       maxProfit,
       maxLoss,
-      tradesPerDay,
+      tradesPerDay, // Individual buy/sell orders per day
     };
   }
 
@@ -308,10 +351,20 @@ export class OptimizationService {
         // Only apply conservative changes (small increments)
         const oldValue = parseFloat(rec.oldValue);
         const newValue = parseFloat(rec.newValue);
-        const change = Math.abs(newValue - oldValue) / oldValue;
+        const change = Math.abs(newValue - oldValue) / Math.max(oldValue, 1); // Avoid division by zero
+        
+        // For integer settings (like COOLDOWN_CYCLES, MAX_POSITIONS), allow +1/-1 changes
+        // For percentage/float settings, use 50% threshold
+        const isIntegerSetting = rec.parameter.includes('CYCLES') || 
+                                 rec.parameter.includes('POSITIONS') ||
+                                 rec.parameter.includes('HOURS');
+        
+        const absoluteChange = Math.abs(newValue - oldValue);
+        const shouldApply = isIntegerSetting 
+          ? absoluteChange <= 1  // Allow +1/-1 for integer settings
+          : change <= 0.5;        // 50% threshold for float settings
 
-        // Only apply if change is < 50% (conservative)
-        if (change <= 0.5) {
+        if (shouldApply) {
           await this.settingsService.updateSetting(rec.parameter, rec.newValue);
           applied.push(rec);
           this.logger.log(`Applied optimization: ${rec.parameter}`, {
@@ -325,6 +378,8 @@ export class OptimizationService {
             oldValue: rec.oldValue,
             newValue: rec.newValue,
             changePercent: (change * 100).toFixed(1),
+            absoluteChange,
+            isIntegerSetting,
           });
         }
       } catch (error: any) {

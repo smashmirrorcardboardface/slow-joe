@@ -1,6 +1,6 @@
 .app {
   min-height: 100vh;
-  background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+  background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
 }
 
 .container {
@@ -38,7 +38,7 @@
 .metric-value {
   font-size: 2rem;
   font-weight: bold;
-  color: #4ade80;
+  color: #fb923c;
   margin: 0.5rem 0;
 }
 
@@ -50,7 +50,7 @@
 }
 
 .button {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #fb923c 0%, #ea580c 100%);
   color: white;
   border: none;
   padding: 0.75rem 1.5rem;
@@ -63,7 +63,7 @@
 
 .button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 12px rgba(251, 146, 60, 0.4);
 }
 
 .button:disabled {
@@ -72,11 +72,11 @@
 }
 
 .button.danger {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  background: linear-gradient(135deg, #525252 0%, #404040 100%);
 }
 
 .button.success {
-  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  background: linear-gradient(135deg, #fb923c 0%, #ea580c 100%);
 }
 
 .table {
