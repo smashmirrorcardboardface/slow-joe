@@ -1483,6 +1483,142 @@ export class StrategyService {
       }
     }
 
+    // If we're at MAX_POSITIONS and have available cash, consider adding to existing positions
+    // This allows "averaging up" on winning positions when no new slots are available
+    if (availableSlots === 0 && (availableCash - allocatedCash) > 10) {
+      const remainingCash = availableCash - allocatedCash;
+      const maxAllocFraction = await this.settingsService.getSettingNumber('MAX_ALLOC_FRACTION');
+      const minOrderUsd = await this.settingsService.getSettingNumber('MIN_ORDER_USD');
+      
+      // Find held positions that are still in the top signals (strong opportunities)
+      // Only consider positions that are profitable or at least not losing significantly
+      const topSignalsForAveraging = signals.slice(0, Math.min(3, signals.length)); // Top 3 signals
+      
+      for (const position of currentPositions) {
+        const signal = signals.find(s => s.symbol === position.symbol);
+        if (!signal) continue;
+        
+        // Check if it's in the top signals
+        const isTopSignal = topSignalsForAveraging.some(s => s.symbol === position.symbol);
+        if (!isTopSignal) continue;
+        
+        // Check if there's already a pending buy order for this symbol
+        if (pendingBuySymbols.has(position.symbol)) {
+          this.logger.debug(`Skipping averaging up - buy order already pending`, {
+            symbol: position.symbol,
+          });
+          continue;
+        }
+        
+        // Check if we've already added a buy trade for this symbol in this evaluation
+        const alreadyAdded = trades.some(t => t.side === 'buy' && t.symbol === position.symbol);
+        if (alreadyAdded) {
+          this.logger.debug(`Skipping averaging up - buy trade already added`, {
+            symbol: position.symbol,
+          });
+          continue;
+        }
+        
+        const ticker = await this.exchangeService.getTicker(position.symbol);
+        const entryPrice = parseFloat(position.entryPrice);
+        const currentPrice = ticker.price;
+        const profitPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+        const currentPositionValue = parseFloat(position.quantity) * currentPrice;
+        
+        // Only average up on positions that are:
+        // - Profitable (profit > 0%), OR
+        // - Not losing too much (loss < 5%)
+        if (profitPct <= -5) {
+          this.logger.debug(`Skipping averaging up - position losing too much`, {
+            symbol: position.symbol,
+            profitPct: profitPct.toFixed(2),
+          });
+          continue;
+        }
+        
+        // Limit: Don't let a single position exceed 80% of NAV
+        const maxPositionValue = nav * 0.80;
+        const maxAdditionalValue = maxPositionValue - currentPositionValue;
+        
+        if (maxAdditionalValue < minOrderUsd) {
+          this.logger.debug(`Skipping averaging up - position already at max size`, {
+            symbol: position.symbol,
+            currentPositionValue: currentPositionValue.toFixed(2),
+            maxPositionValue: maxPositionValue.toFixed(2),
+            maxAdditionalValue: maxAdditionalValue.toFixed(2),
+          });
+          continue;
+        }
+        
+        // Calculate how much to add (use a conservative fraction of remaining cash)
+        // Use 50% of MAX_ALLOC_FRACTION to be conservative when averaging up
+        const averagingAllocFraction = maxAllocFraction * 0.5;
+        const alloc = Math.min(remainingCash * averagingAllocFraction, maxAdditionalValue);
+        
+        if (alloc < minOrderUsd) {
+          this.logger.debug(`Skipping averaging up - allocation too small`, {
+            symbol: position.symbol,
+            alloc: alloc.toFixed(2),
+            minOrderUsd,
+            remainingCash: remainingCash.toFixed(2),
+          });
+          continue;
+        }
+        
+        // Get lot size info
+        const lotInfo = await this.exchangeService.getLotSizeInfo(position.symbol);
+        const minOrderSizeUsd = Math.max(lotInfo.minOrderSize * ticker.price, minOrderUsd);
+        
+        if (alloc < minOrderSizeUsd) {
+          this.logger.debug(`Skipping averaging up - cannot meet minimum order size`, {
+            symbol: position.symbol,
+            alloc: alloc.toFixed(2),
+            minOrderSizeUsd: minOrderSizeUsd.toFixed(2),
+          });
+          continue;
+        }
+        
+        // Calculate quantity to add
+        const quantity = await this.calculateSize(remainingCash, ticker.price, position.symbol, alloc / remainingCash);
+        
+        if (quantity > 0) {
+          const orderValue = quantity * ticker.price;
+          
+          // Ensure order value doesn't exceed available cash
+          const feeBuffer = Math.max(remainingCash * 0.05, 2.00);
+          const maxOrderValue = remainingCash - feeBuffer;
+          
+          if (orderValue > maxOrderValue) {
+            this.logger.debug(`Skipping averaging up - order value exceeds available cash`, {
+              symbol: position.symbol,
+              orderValue: orderValue.toFixed(4),
+              maxOrderValue: maxOrderValue.toFixed(4),
+              remainingCash: remainingCash.toFixed(4),
+            });
+            continue;
+          }
+          
+          allocatedCash += orderValue;
+          
+          trades.push({ symbol: position.symbol, side: 'buy', quantity });
+          
+          this.logger.log(`Adding to existing position (averaging up)`, {
+            symbol: position.symbol,
+            currentQuantity: parseFloat(position.quantity).toFixed(8),
+            additionalQuantity: quantity.toFixed(8),
+            entryPrice: entryPrice.toFixed(4),
+            currentPrice: currentPrice.toFixed(4),
+            profitPct: profitPct.toFixed(2),
+            orderValue: orderValue.toFixed(4),
+            currentPositionValue: currentPositionValue.toFixed(4),
+            newPositionValue: (currentPositionValue + orderValue).toFixed(4),
+            remainingCash: remainingCash.toFixed(4),
+            signalScore: signal.indicators.score.toFixed(3),
+          });
+        }
+      }
+    }
+
     const tradesSummary = trades.length > 0 
       ? trades.map(t => `${t.side.toUpperCase()} ${t.symbol} (${t.quantity.toFixed(8)})`).join(', ')
       : 'none';

@@ -1312,16 +1312,33 @@ function Dashboard() {
                       <div className="flex flex-col gap-2">
                         {openOrders.map((order: any) => {
                           const marketDataItem = marketData.find(m => m.symbol === order.symbol);
-                          const currentPrice = marketDataItem?.price || marketDataItem?.bid || marketDataItem?.ask;
+                          // For buy orders, use ASK price (what sellers are asking)
+                          // For sell orders, use BID price (what buyers are offering)
+                          // This is the correct price to compare against our limit order
+                          const currentPrice = order.side === 'buy' 
+                            ? (marketDataItem?.ask || marketDataItem?.price)
+                            : (marketDataItem?.bid || marketDataItem?.price);
                           const limitPrice = order.price;
+                          const quantity = parseFloat(order.remainingQuantity || order.quantity || '0');
+                          const orderValue = quantity * limitPrice;
                           const priceDiff = currentPrice && limitPrice ? ((currentPrice - limitPrice) / limitPrice) * 100 : null;
                           
+                          // Calculate time since order was placed
+                          const orderTime = order.openedAt ? new Date(order.openedAt) : null;
+                          const timeSinceOrder = orderTime ? Date.now() - orderTime.getTime() : null;
+                          const minutesSince = timeSinceOrder ? Math.floor(timeSinceOrder / (1000 * 60)) : null;
+                          const hoursSince = minutesSince ? (minutesSince / 60).toFixed(1) : null;
+                          
+                          // Estimate time until fill (15 minute timeout for limit orders)
+                          const fillTimeoutMinutes = 15;
+                          const minutesRemaining = minutesSince !== null ? Math.max(0, fillTimeoutMinutes - minutesSince) : null;
+                          
                           return (
-                            <div key={order.orderId} className="px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-md flex flex-col gap-1.5">
-                              <div className="flex justify-between items-center">
-                                <div>
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="font-semibold">{order.symbol}</span>
+                            <div key={order.orderId} className="px-3 py-2.5 bg-blue-500/10 border border-blue-500/20 rounded-md">
+                              <div className="flex justify-between items-start mb-2">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1.5">
+                                    <span className="font-semibold text-base">{order.symbol}</span>
                                     <Badge variant={order.side === 'buy' ? 'success' : 'secondary'} className="text-xs">
                                       {order.side.toUpperCase()}
                                     </Badge>
@@ -1329,37 +1346,94 @@ function Dashboard() {
                                       PENDING
                                     </Badge>
                                   </div>
-                                  <div className="text-sm text-muted-foreground">
-                                    {order.remainingQuantity?.toFixed(8) || order.quantity?.toFixed(8)} @ ${limitPrice?.toFixed(4) || 'N/A'}
+                                  <div className="text-sm text-muted-foreground space-y-0.5">
+                                    <div>Quantity: {quantity.toFixed(8)}</div>
+                                    <div>Order Value: ${orderValue.toFixed(2)}</div>
                                   </div>
                                 </div>
-                                <div className="text-xs text-muted-foreground text-right">
-                                  {order.openedAt ? formatDateTime(order.openedAt, openOrders) : 'N/A'}
+                                <div className="text-right">
+                                  <div className="text-xs text-muted-foreground mb-1">
+                                    {order.openedAt ? formatDateTime(order.openedAt, openOrders) : 'N/A'}
+                                  </div>
+                                  {minutesSince !== null && (
+                                    <div className="text-xs text-muted-foreground">
+                                      {minutesSince < 60 
+                                        ? `${minutesSince}m ago`
+                                        : `${hoursSince}h ago`
+                                      }
+                                    </div>
+                                  )}
+                                  {minutesRemaining !== null && minutesRemaining < 5 && (
+                                    <div className="text-xs text-orange-400 font-semibold mt-1">
+                                      {minutesRemaining > 0 ? `~${Math.ceil(minutesRemaining)}m until market order` : 'Market order soon'}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
+                              
+                              {/* Price Information - Prominently Displayed */}
                               {currentPrice && limitPrice && priceDiff !== null && (
-                                <div className="text-xs text-muted-foreground p-2 bg-black/20 rounded">
-                                  <div className="flex justify-between mb-1">
-                                    <span>Limit Price:</span>
-                                    <span className="font-semibold">${limitPrice.toFixed(4)}</span>
+                                <div className="mt-2 p-2.5 bg-black/30 rounded border border-border/50">
+                                  <div className="grid grid-cols-2 gap-3 mb-2">
+                                    <div>
+                                      <div className="text-xs text-muted-foreground mb-0.5">
+                                        Current {order.side === 'buy' ? 'Ask' : 'Bid'}
+                                      </div>
+                                      <div className="text-base font-bold text-orange-400">
+                                        ${currentPrice.toFixed(4)}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="text-xs text-muted-foreground mb-0.5">Limit Price</div>
+                                      <div className="text-base font-bold">
+                                        ${limitPrice.toFixed(4)}
+                                      </div>
+                                    </div>
                                   </div>
-                                  <div className="flex justify-between mb-1">
-                                    <span>Current {order.side === 'buy' ? 'Bid' : 'Ask'}:</span>
-                                    <span className="font-semibold">${currentPrice.toFixed(4)}</span>
-                                  </div>
-                                  <div className={`flex justify-between ${priceDiff > 0.05 ? 'text-orange-400' : 'text-muted-foreground'}`}>
-                                    <span>Price Gap:</span>
-                                    <span className="font-semibold">
-                                      {priceDiff > 0 ? '+' : ''}{priceDiff.toFixed(3)}%
-                                      {order.side === 'buy' && priceDiff > 0 && ' (waiting for price drop)'}
-                                      {order.side === 'buy' && priceDiff <= 0 && ' (should fill soon)'}
-                                    </span>
+                                  <div className="pt-2 border-t border-border/50">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs text-muted-foreground">Price Gap:</span>
+                                      <div className={`text-lg font-bold ${Math.abs(priceDiff) > 0.1 ? 'text-orange-400' : Math.abs(priceDiff) > 0.05 ? 'text-yellow-400' : 'text-green-400'}`}>
+                                        {priceDiff > 0 ? '+' : ''}{priceDiff.toFixed(3)}%
+                                      </div>
+                                    </div>
+                                    <div className="text-xs text-muted-foreground mt-1">
+                                      {order.side === 'buy' ? (
+                                        priceDiff > 0.1 
+                                          ? `Waiting for ask price to drop ${priceDiff.toFixed(2)}% to fill (POST-ONLY order)`
+                                          : priceDiff > 0
+                                          ? `Ask price close to limit - should fill soon (POST-ONLY order)`
+                                          : `Ask price at or below limit - order should fill (POST-ONLY may delay)`
+                                      ) : (
+                                        priceDiff < -0.1
+                                          ? `Waiting for bid price to rise ${Math.abs(priceDiff).toFixed(2)}% to fill (POST-ONLY order)`
+                                          : priceDiff < 0
+                                          ? `Bid price close to limit - should fill soon (POST-ONLY order)`
+                                          : `Bid price at or above limit - order should fill (POST-ONLY may delay)`
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground mt-2 pt-2 border-t border-border/50">
+                                      {minutesSince !== null && minutesSince < fillTimeoutMinutes && (
+                                        <span>⏳ POST-ONLY order: Will convert to market order in ~{Math.ceil(fillTimeoutMinutes - minutesSince)}m if not filled</span>
+                                      )}
+                                      {minutesSince !== null && minutesSince >= fillTimeoutMinutes && (
+                                        <span className="text-orange-400">⚠️ Order should have converted to market order - check exchange</span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               )}
-                              <div className="text-xs text-muted-foreground">
-                                Order ID: {order.orderId?.substring(0, 8)}...
-                              </div>
+                              {(!currentPrice || !limitPrice) && (
+                                <div className="mt-2 p-2 bg-black/20 rounded text-xs text-muted-foreground">
+                                  Price data unavailable
+                                </div>
+                              )}
+                              
+                              {order.orderId && (
+                                <div className="text-xs text-muted-foreground mt-2 pt-2 border-t border-border/50">
+                                  Order ID: <span className="font-mono">{order.orderId}</span>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
