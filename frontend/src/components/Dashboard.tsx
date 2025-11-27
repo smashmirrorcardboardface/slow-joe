@@ -14,7 +14,7 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
-import { RefreshCw, Database, Radio, RotateCw, XCircle, CheckCircle, TrendingDown, TrendingUp, Briefcase, DollarSign, Clock, FileText, AlertCircle, ArrowRight } from 'lucide-react';
+import { RefreshCw, Database, Radio, RotateCw, XCircle, CheckCircle, TrendingDown, TrendingUp, Briefcase, DollarSign, Clock, FileText, AlertCircle, ArrowRight, AlertTriangle, BarChart } from 'lucide-react';
 import './Dashboard.css';
 
 const API_BASE = '/api';
@@ -545,7 +545,7 @@ function Dashboard() {
       }
 
       if (netProfit < 0 && totalFees > Math.abs(realizedPnL)) {
-        reasons.push(`⚠️ Your fees ($${totalFees.toFixed(2)}) exceed your trading profits ($${realizedPnL.toFixed(2)}), making trading unprofitable.`);
+        reasons.push(`[WARNING] Your fees ($${totalFees.toFixed(2)}) exceed your trading profits ($${realizedPnL.toFixed(2)}), making trading unprofitable.`);
       }
     }
 
@@ -677,14 +677,14 @@ function Dashboard() {
     
     // Strategy status
     if (!strategyEnabled) {
-      insights.push("⚠️ Strategy is currently disabled. No trades will be executed.");
+      insights.push("[WARNING] Strategy is currently disabled. No trades will be executed.");
       actions.push("Enable the strategy to start trading.");
       return { insights, actions };
     }
     
     // Portfolio status
     if (!metrics || metrics.nav === 0) {
-      insights.push("📊 Portfolio balance not yet initialized.");
+      insights.push("[PORTFOLIO] Portfolio balance not yet initialized.");
       actions.push("Click 'Reconcile Balance' to fetch your current balance from the exchange.");
       return { insights, actions };
     }
@@ -721,7 +721,7 @@ function Dashboard() {
     // Market conditions summary
     if (buySignals.length > 0) {
       const symbols = buySignals.map(s => s.symbol).join(', ');
-      insights.push(`✅ ${buySignals.length} asset(s) showing BUY signals: ${symbols}`);
+      insights.push(`[BUY] ${buySignals.length} asset(s) showing BUY signals: ${symbols}`);
       if (positionCount === 0) {
         actions.push(`Consider opening positions in ${symbols} - indicators suggest bullish momentum.`);
       } else {
@@ -731,7 +731,7 @@ function Dashboard() {
     
     if (bearishSignals.length > 0) {
       const symbols = bearishSignals.map(s => s.symbol).join(', ');
-      insights.push(`📉 ${bearishSignals.length} asset(s) showing bearish conditions: ${symbols}`);
+      insights.push(`[BEARISH] ${bearishSignals.length} asset(s) showing bearish conditions: ${symbols}`);
       const hasPositions = openPositions.some((p: any) => bearishSignals.some(s => s.symbol === p.symbol));
       if (hasPositions) {
         actions.push(`Consider closing positions in ${symbols} - trend is turning bearish.`);
@@ -740,7 +740,7 @@ function Dashboard() {
     
     if (overboughtSignals.length > 0) {
       const symbols = overboughtSignals.map(s => s.symbol).join(', ');
-      insights.push(`🔴 ${overboughtSignals.length} asset(s) are overbought (RSI > 70): ${symbols}`);
+      insights.push(`[OVERBOUGHT] ${overboughtSignals.length} asset(s) are overbought (RSI > 70): ${symbols}`);
       const hasPositions = openPositions.some((p: any) => overboughtSignals.some(s => s.symbol === p.symbol));
       if (hasPositions) {
         actions.push(`Consider taking profits on ${symbols} - prices may be near local highs.`);
@@ -751,13 +751,13 @@ function Dashboard() {
     
     if (oversoldSignals.length > 0) {
       const symbols = oversoldSignals.map(s => s.symbol).join(', ');
-      insights.push(`🟢 ${oversoldSignals.length} asset(s) are oversold (RSI < 40): ${symbols}`);
+      insights.push(`[OVERSOLD] ${oversoldSignals.length} asset(s) are oversold (RSI < 40): ${symbols}`);
       actions.push(`Watch ${symbols} for potential reversal - may present buying opportunities if EMA turns bullish.`);
     }
     
     // Position analysis
     if (positionCount > 0) {
-      insights.push(`💼 Currently holding ${positionCount} open position(s).`);
+      insights.push(`[POSITIONS] Currently holding ${positionCount} open position(s).`);
       
       // Check if positions are profitable
       const profitablePositions = openPositions.filter((p: any) => {
@@ -768,7 +768,7 @@ function Dashboard() {
       
       if (profitablePositions.length > 0) {
         const symbols = profitablePositions.map((p: any) => p.symbol).join(', ');
-        insights.push(`📈 ${profitablePositions.length} position(s) in profit: ${symbols}`);
+        insights.push(`[PROFIT] ${profitablePositions.length} position(s) in profit: ${symbols}`);
       }
       
       const losingPositions = openPositions.filter((p: any) => {
@@ -779,10 +779,10 @@ function Dashboard() {
       
       if (losingPositions.length > 0) {
         const symbols = losingPositions.map((p: any) => p.symbol).join(', ');
-        insights.push(`📉 ${losingPositions.length} position(s) at a loss: ${symbols}`);
+        insights.push(`[LOSS] ${losingPositions.length} position(s) at a loss: ${symbols}`);
       }
     } else {
-      insights.push("💼 No open positions currently.");
+      insights.push("[POSITIONS] No open positions currently.");
       if (buySignals.length === 0) {
         actions.push("Waiting for favorable entry conditions - no strong buy signals at the moment.");
       }
@@ -794,27 +794,27 @@ function Dashboard() {
       const tradeType = lastTrade.side === 'buy' ? 'purchased' : 'sold';
       const price = lastTrade.price != null ? parseFloat(String(lastTrade.price)) : null;
       const priceStr = price != null && !isNaN(price) ? price.toFixed(2) : 'N/A';
-      insights.push(`🔄 Most recent trade: ${tradeType} ${lastTrade.quantity} ${lastTrade.symbol} at $${priceStr}`);
+      insights.push(`[TRADE] Most recent trade: ${tradeType} ${lastTrade.quantity} ${lastTrade.symbol} at $${priceStr}`);
     } else {
-      insights.push("📝 No trades executed yet. The bot is waiting for signal conditions to be met.");
+      insights.push("[TRADE] No trades executed yet. The bot is waiting for signal conditions to be met.");
     }
     
     // P&L analysis
     if (metrics?.totalPnL) {
       const pnl = metrics.totalPnL;
       if (pnl > 0) {
-        insights.push(`💰 Total P&L: +$${pnl.toFixed(2)} - Portfolio is in profit!`);
+        insights.push(`[P&L] Total P&L: +$${pnl.toFixed(2)} - Portfolio is in profit!`);
       } else if (pnl < 0) {
-        insights.push(`💰 Total P&L: $${pnl.toFixed(2)} - Portfolio is at a loss.`);
+        insights.push(`[P&L] Total P&L: $${pnl.toFixed(2)} - Portfolio is at a loss.`);
       } else {
-        insights.push(`💰 Total P&L: $0.00 - Break even.`);
+        insights.push(`[P&L] Total P&L: $0.00 - Break even.`);
       }
     }
     
     // Next signal poller timing
     const hoursUntilNext = Math.ceil((jobTimes.signalPoller.getTime() - new Date().getTime()) / (1000 * 60 * 60));
     if (hoursUntilNext > 0) {
-      insights.push(`⏰ Next signal evaluation in ~${hoursUntilNext} hour(s) (${jobTimes.signalPoller.toLocaleTimeString()}).`);
+      insights.push(`[CLOCK] Next signal evaluation in ~${hoursUntilNext} hour(s) (${jobTimes.signalPoller.toLocaleTimeString()}).`);
     }
     
     // Default actions if none suggested
@@ -832,6 +832,21 @@ function Dashboard() {
   const summary = generateSummary();
 
   const getIconForEmoji = (text: string) => {
+    // Handle text prefixes (new approach)
+    if (text.startsWith('[BUY]')) return <CheckCircle className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    if (text.startsWith('[BEARISH]') || text.startsWith('[LOSS]')) return <TrendingDown className="h-3 w-3 inline mr-1.5 text-red-400" />;
+    if (text.startsWith('[PROFIT]')) return <TrendingUp className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    if (text.startsWith('[POSITIONS]')) return <Briefcase className="h-3 w-3 inline mr-1.5 text-orange-400" />;
+    if (text.startsWith('[TRADE]')) return <RefreshCw className="h-3 w-3 inline mr-1.5 text-blue-400" />;
+    if (text.startsWith('[P&L]')) return <DollarSign className="h-3 w-3 inline mr-1.5 text-orange-400" />;
+    if (text.startsWith('[CLOCK]')) return <Clock className="h-3 w-3 inline mr-1.5 text-blue-400" />;
+    if (text.startsWith('[TRADE]') && text.includes('No trades')) return <FileText className="h-3 w-3 inline mr-1.5 text-gray-400" />;
+    if (text.startsWith('[OVERBOUGHT]')) return <AlertCircle className="h-3 w-3 inline mr-1.5 text-red-400" />;
+    if (text.startsWith('[OVERSOLD]')) return <CheckCircle className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    if (text.startsWith('[WARNING]')) return <AlertTriangle className="h-3 w-3 inline mr-1.5 text-orange-400" />;
+    if (text.startsWith('[PORTFOLIO]')) return <BarChart className="h-3 w-3 inline mr-1.5 text-blue-400" />;
+    
+    // Legacy emoji support (for backwards compatibility)
     if (text.startsWith('✅')) return <CheckCircle className="h-3 w-3 inline mr-1.5 text-green-500" />;
     if (text.startsWith('📉')) return <TrendingDown className="h-3 w-3 inline mr-1.5 text-red-400" />;
     if (text.startsWith('📈')) return <TrendingUp className="h-3 w-3 inline mr-1.5 text-green-500" />;
@@ -842,11 +857,18 @@ function Dashboard() {
     if (text.startsWith('📝')) return <FileText className="h-3 w-3 inline mr-1.5 text-gray-400" />;
     if (text.startsWith('🔴')) return <AlertCircle className="h-3 w-3 inline mr-1.5 text-red-400" />;
     if (text.startsWith('🟢')) return <CheckCircle className="h-3 w-3 inline mr-1.5 text-green-500" />;
+    if (text.startsWith('⚠️')) return <AlertTriangle className="h-3 w-3 inline mr-1.5 text-orange-400" />;
+    if (text.startsWith('📊')) return <BarChart className="h-3 w-3 inline mr-1.5 text-blue-400" />;
+    
     return null;
   };
 
   const removeEmoji = (text: string) => {
-    return text.replace(/^[✅📉📈💼🔄💰⏰📝🔴🟢→]/g, '').trim();
+    // Remove text prefixes
+    let cleaned = text.replace(/^\[BUY\]|^\[BEARISH\]|^\[PROFIT\]|^\[LOSS\]|^\[POSITIONS\]|^\[TRADE\]|^\[P&L\]|^\[CLOCK\]|^\[OVERBOUGHT\]|^\[OVERSOLD\]|^\[WARNING\]|^\[PORTFOLIO\]/g, '').trim();
+    // Remove legacy emojis
+    cleaned = cleaned.replace(/^[✅📉📈💼🔄💰⏰📝🔴🟢⚠️❌📊→]/g, '').trim();
+    return cleaned;
   };
 
   return (

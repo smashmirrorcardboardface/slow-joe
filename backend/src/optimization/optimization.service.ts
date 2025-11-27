@@ -248,8 +248,9 @@ export class OptimizationService {
   ): Promise<OptimizationResult[]> {
     const recommendations: OptimizationResult[] = [];
 
-    // 1. If win rate is low (< 40%) and fees are high, increase MIN_PROFIT_PCT
-    if (metrics.winRate < 40 && metrics.totalFees > metrics.totalProfit * 0.3) {
+    // 1. If win rate is low (<= 40%) and fees are high, increase MIN_PROFIT_PCT
+    // Note: winRate is stored as percentage (0-100), not decimal
+    if (metrics.winRate <= 40 && metrics.totalFees > metrics.totalProfit * 0.3) {
       const currentMinProfit = currentSettings.minProfitPct;
       const suggestedMinProfit = Math.min(currentMinProfit + 1, 8); // Cap at 8%
       if (suggestedMinProfit > currentMinProfit) {
@@ -264,7 +265,8 @@ export class OptimizationService {
     }
 
     // 2. If trading too frequently (high trades per day), increase hold periods
-    if (metrics.tradesPerDay > 5) {
+    // Also check if fees are eating profits
+    if (metrics.tradesPerDay > 5 || (metrics.totalFees > metrics.totalProfit && metrics.tradesPerDay > 3)) {
       const currentCooldown = currentSettings.cooldownCycles;
       const suggestedCooldown = Math.min(currentCooldown + 1, 5); // Cap at 5 cycles
       if (suggestedCooldown > currentCooldown) {
@@ -273,13 +275,14 @@ export class OptimizationService {
           oldValue: currentCooldown.toString(),
           newValue: suggestedCooldown.toString(),
           expectedImprovement: 'Longer cooldown reduces trading frequency and fees',
-          reason: `Trading ${metrics.tradesPerDay.toFixed(1)} times per day is too frequent`,
+          reason: `Trading ${metrics.tradesPerDay.toFixed(1)} times per day is too frequent${metrics.totalFees > metrics.totalProfit ? ' and fees exceed profits' : ''}`,
         });
       }
     }
 
     // 3. If average profit is very low, increase MIN_PROFIT_PCT more aggressively
-    if (metrics.avgProfitPerTrade < 0.01 && metrics.totalTrades > 10) {
+    // Also check if fees are a problem
+    if (metrics.avgProfitPerTrade < 0.01 && (metrics.totalTrades > 10 || metrics.totalFees > metrics.totalProfit)) {
       const currentMinProfit = currentSettings.minProfitPct;
       const suggestedMinProfit = Math.min(currentMinProfit + 2, 10); // Cap at 10%
       if (suggestedMinProfit > currentMinProfit) {
@@ -323,8 +326,35 @@ export class OptimizationService {
       }
     }
 
-    // 6. If fees are very high relative to profits, suggest reducing MAX_POSITIONS
-    if (metrics.totalFees > metrics.totalProfit * 0.5 && metrics.totalTrades > 5) {
+    // 6. If fees are very high relative to profits, suggest reducing MAX_POSITIONS or increasing MIN_PROFIT_PCT
+    // This is a critical issue - fees eating all profits
+    if (metrics.totalFees > metrics.totalProfit && metrics.totalTrades > 3) {
+      // First try increasing MIN_PROFIT_PCT to require larger profits
+      const currentMinProfit = currentSettings.minProfitPct;
+      const suggestedMinProfit = Math.min(currentMinProfit + 1, 8); // Cap at 8%
+      if (suggestedMinProfit > currentMinProfit) {
+        recommendations.push({
+          parameter: 'MIN_PROFIT_PCT',
+          oldValue: currentMinProfit.toString(),
+          newValue: suggestedMinProfit.toString(),
+          expectedImprovement: 'Higher profit threshold needed to overcome fee drag',
+          reason: `Fees ($${metrics.totalFees.toFixed(2)}) exceed profits ($${metrics.totalProfit.toFixed(2)}) - need larger profit targets`,
+        });
+      }
+      
+      // Also suggest reducing MAX_POSITIONS if it's > 2
+      const currentMaxPositions = currentSettings.maxPositions;
+      if (currentMaxPositions > 2) {
+        recommendations.push({
+          parameter: 'MAX_POSITIONS',
+          oldValue: currentMaxPositions.toString(),
+          newValue: (currentMaxPositions - 1).toString(),
+          expectedImprovement: 'Fewer positions = fewer trades = lower fees',
+          reason: `Fees ($${metrics.totalFees.toFixed(2)}) exceed profits ($${metrics.totalProfit.toFixed(2)}) - reduce trading frequency`,
+        });
+      }
+    } else if (metrics.totalFees > metrics.totalProfit * 0.5 && metrics.totalTrades > 5) {
+      // Fees are > 50% of profits but not exceeding them
       const currentMaxPositions = currentSettings.maxPositions;
       if (currentMaxPositions > 2) {
         recommendations.push({

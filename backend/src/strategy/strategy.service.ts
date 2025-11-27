@@ -347,10 +347,10 @@ export class StrategyService {
       }
     }
 
-    // Log summary of filtered signals if all were filtered
-    if (signals.length === 0 && filteredSignals.length > 0) {
+    // Log summary of filtered signals
+    if (filteredSignals.length > 0) {
       const summaryLines = [
-        `All ${filteredSignals.length} signal(s) filtered out. Filter breakdown:`,
+        `${filteredSignals.length} signal(s) filtered out. Filter breakdown:`,
         `Thresholds: EMA ratio minimum ${minEMARatio.toFixed(3)} with volatility-aware cap, RSI [${rsiLow} - ${rsiHigh}]`,
       ];
       
@@ -361,8 +361,10 @@ export class StrategyService {
         );
       });
       
+      // Always log filter breakdown at info level so users can see why signals were filtered
       this.logger.log(summaryLines.join('\n'), {
         totalSignals: filteredSignals.length,
+        passedSignals: signals.length,
         filterBreakdown: filteredSignals.map(f => ({
           symbol: f.symbol,
           reasons: f.reasons,
@@ -807,7 +809,7 @@ export class StrategyService {
       // Increase minimum hold period to let winners run and reduce fee drag
       const positionAgeMs = Date.now() - pos.openedAt.getTime();
       const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
-      const minHoldCycles = 3; // Minimum 3 cadence cycles (6-12 hours) before rotation to reduce trading frequency
+      const minHoldCycles = 6; // Minimum 6 cadence cycles (12-24 hours) before rotation - let winners run longer to capture larger moves
       const minHoldHours = cadenceHours * minHoldCycles;
       
       // Calculate current P&L to check if position is profitable
@@ -1006,7 +1008,7 @@ export class StrategyService {
         // Reuse position age calculation from rotation check above
         const positionAgeMs = Date.now() - pos.openedAt.getTime();
         const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
-        const minHoldCycles = 4; // Minimum 4 cadence cycles (8-12 hours) before "not in target" exit to reduce trading frequency
+        const minHoldCycles = 8; // Minimum 8 cadence cycles (16-24 hours) before "not in target" exit - let positions run longer to capture larger moves
         const minHoldHours = cadenceHours * minHoldCycles;
         
         // Calculate current P&L - don't exit profitable positions just because they're not in target
@@ -1043,9 +1045,9 @@ export class StrategyService {
         }
         
         // If position is too new, skip exit (let momentum develop)
-        // BUT: If position is not in signals at all, use a shorter minimum hold time (2 cycles instead of 4)
-        // This allows faster rotation out of positions that don't meet entry criteria
-        const effectiveMinHoldCycles = !isInSignals ? 2 : minHoldCycles; // 2 cycles (4-6 hours) if not in signals, 4 cycles otherwise
+        // BUT: If position is not in signals at all, use a shorter minimum hold time (4 cycles instead of 8)
+        // This allows faster rotation out of positions that don't meet entry criteria, but still gives them time to develop
+        const effectiveMinHoldCycles = !isInSignals ? 4 : minHoldCycles; // 4 cycles (8-12 hours) if not in signals, 8 cycles otherwise
         const effectiveMinHoldHours = cadenceHours * effectiveMinHoldCycles;
         
         this.logger.log(`[TARGET EXIT CHECK] Evaluating exit for position not in target`, {
@@ -1511,7 +1513,13 @@ export class StrategyService {
         if (signals.length === 0) {
           reasons.push(`No signals passed entry filters (all ${universe.length} assets filtered out)`);
         } else {
-          reasons.push(`No target assets selected (${signals.length} signal(s) generated but topK=0, availableSlots=${availableSlots})`);
+          // Check if all signals are for positions we already hold
+          const heldSignals = signals.filter(s => currentHoldings.has(s.symbol));
+          if (heldSignals.length === signals.length) {
+            reasons.push(`All ${signals.length} signal(s) are for positions already held (${heldSignals.map(s => s.symbol).join(', ')})`);
+          } else {
+            reasons.push(`No target assets selected (${signals.length} signal(s) generated but topK=0, availableSlots=${availableSlots}, availableSignals=${availableSignals.length})`);
+          }
         }
       }
       const alreadyHeld = targetAssets.filter(s => currentHoldings.has(s));
