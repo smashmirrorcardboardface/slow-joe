@@ -168,7 +168,7 @@ export class JobsScheduler {
         
         // Normal stale order check (for all orders or if balance check passed)
         if (orderAge > staleThresholdMs) {
-          this.logger.warn(`Found stale order, cancelling`, {
+          this.logger.warn(`Found stale order, cancelling and converting to market order`, {
             orderId: order.orderId,
             symbol: order.symbol,
             side: order.side,
@@ -177,12 +177,65 @@ export class JobsScheduler {
           });
 
           try {
+            // Cancel the stale limit order
             await this.exchangeService.cancelOrder(order.orderId);
             cancelledCount++;
             this.logger.log(`Cancelled stale order`, {
               orderId: order.orderId,
               symbol: order.symbol,
             });
+            
+            // For buy orders, place a market order to ensure execution
+            // (Sell orders are just cancelled - can't force a sell if we don't have the asset)
+            if (order.side === 'buy') {
+              try {
+                const remainingQty = order.remainingQuantity || order.quantity;
+                if (remainingQty > 0) {
+                  // Get current market price
+                  const ticker = await this.exchangeService.getTicker(order.symbol);
+                  const currentPrice = ticker.ask;
+                  
+                  // Check slippage (compare against original limit price)
+                  const originalLimitPrice = order.price || 0;
+                  const slippagePct = originalLimitPrice > 0 
+                    ? Math.abs((currentPrice - originalLimitPrice) / originalLimitPrice)
+                    : 0;
+                  
+                  // Allow up to 1% slippage for market order fallbacks
+                  const marketOrderMaxSlippage = 0.01; // 1%
+                  
+                  if (slippagePct <= marketOrderMaxSlippage) {
+                    // Enqueue market order execution
+                    await this.jobsService.enqueueOrderExecute(
+                      order.symbol,
+                      'buy',
+                      remainingQty,
+                      currentPrice,
+                    );
+                    this.logger.log(`Enqueued market order for stale buy order`, {
+                      symbol: order.symbol,
+                      quantity: remainingQty,
+                      currentPrice,
+                      originalLimitPrice,
+                      slippagePct: slippagePct * 100,
+                    });
+                  } else {
+                    this.logger.warn(`Skipping market order for stale buy - slippage too high`, {
+                      symbol: order.symbol,
+                      slippagePct: slippagePct * 100,
+                      marketOrderMaxSlippage: marketOrderMaxSlippage * 100,
+                      originalLimitPrice,
+                      currentPrice,
+                    });
+                  }
+                }
+              } catch (marketOrderError: any) {
+                this.logger.error(`Error placing market order for stale buy order`, marketOrderError.stack, {
+                  symbol: order.symbol,
+                  error: marketOrderError.message,
+                });
+              }
+            }
           } catch (cancelError: any) {
             this.logger.warn(`Error cancelling stale order (may already be filled/cancelled)`, {
               orderId: order.orderId,

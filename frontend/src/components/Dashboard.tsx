@@ -61,6 +61,7 @@ function Dashboard() {
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
   const [priceHistory, setPriceHistory] = useState<{ [symbol: string]: any[] }>({});
   const [lastPriceHistoryFetch, setLastPriceHistoryFetch] = useState<number>(0);
+  const [positionPriceHistory, setPositionPriceHistory] = useState<{ [symbol: string]: any[] }>({});
   const [lastHistoryFetch, setLastHistoryFetch] = useState<number>(0);
 
   // Listen for real-time updates
@@ -211,6 +212,26 @@ function Dashboard() {
           }
         }
         setPriceHistory(priceMap);
+        
+        // Also fetch price history for open positions (async, don't block)
+        if (metricsResponse.data?.openPositions && shouldFetchPriceHistory) {
+          (async () => {
+            const positionPriceMap: { [symbol: string]: any[] } = { ...positionPriceHistory };
+            for (const pos of metricsResponse.data.openPositions) {
+              if (!positionPriceMap[pos.symbol]) {
+                try {
+                  const posRes = await axios.get(`${API_BASE}/exchange/price-history/${pos.symbol}`);
+                  positionPriceMap[pos.symbol] = posRes.data.data || [];
+                  await new Promise(resolve => setTimeout(resolve, 200));
+                } catch (error: any) {
+                  console.warn(`Failed to fetch price history for position ${pos.symbol}:`, error.response?.data?.message || error.message);
+                  positionPriceMap[pos.symbol] = [];
+                }
+              }
+            }
+            setPositionPriceHistory(positionPriceMap);
+          })();
+        }
       }
       
       setLastUpdate(new Date());
@@ -1245,6 +1266,19 @@ function Dashboard() {
                           const pnl = currentValue - entryValue;
                           const pnlPercent = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
                           
+                          // Get price history for this position (since it was opened)
+                          const posHistory = positionPriceHistory[pos.symbol] || [];
+                          const openedAt = new Date(pos.openedAt).getTime();
+                          // Filter history to show only data since position was opened, and limit to last 24 hours
+                          const positionHistory = posHistory
+                            .filter((d: any) => d.time >= openedAt)
+                            .slice(-24) // Last 24 data points
+                            .map((d: any) => ({
+                              time: new Date(d.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                              price: d.close || d.price,
+                              entryPrice: entryPrice,
+                            }));
+                          
                           return (
                             <div key={pos.id} className="px-3 py-2.5 bg-muted/50 rounded-md">
                               <div className="flex justify-between items-start mb-2">
@@ -1268,6 +1302,89 @@ function Dashboard() {
                                   </div>
                                 </div>
                               </div>
+                              
+                              {/* Mini Chart */}
+                              {positionHistory.length > 0 && (
+                                <div className="mt-3">
+                                  {/* Price labels */}
+                                  <div className="flex justify-between items-center mb-1 text-xs text-muted-foreground">
+                                    <div className="flex items-center gap-2">
+                                      <span>Entry: ${entryPrice.toFixed(2)}</span>
+                                      <span className="text-orange-400">Current: ${currentPrice.toFixed(2)}</span>
+                                    </div>
+                                    <div className={`text-xs font-medium ${pnlPercent >= 0 ? 'text-orange-400' : 'text-gray-400'}`}>
+                                      {pnlPercent >= 0 ? '+' : ''}{pnlPercent.toFixed(2)}%
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="h-16">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <AreaChart data={positionHistory} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+                                        <defs>
+                                          <linearGradient id={`gradient-${pos.symbol}`} x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor={pnl >= 0 ? "#fb923c" : "#9ca3af"} stopOpacity={0.3}/>
+                                            <stop offset="95%" stopColor={pnl >= 0 ? "#fb923c" : "#9ca3af"} stopOpacity={0}/>
+                                          </linearGradient>
+                                        </defs>
+                                        <Tooltip
+                                          content={({ active, payload }) => {
+                                            if (active && payload && payload.length) {
+                                              const data = payload[0].payload;
+                                              const price = data.price;
+                                              const pricePnl = price - entryPrice;
+                                              const pricePnlPercent = ((price - entryPrice) / entryPrice) * 100;
+                                              return (
+                                                <div className="bg-card border border-border rounded-md p-2 shadow-lg">
+                                                  <div className="text-xs font-semibold mb-1">{pos.symbol}</div>
+                                                  <div className="text-xs space-y-0.5">
+                                                    <div>Price: <span className="font-medium">${price.toFixed(4)}</span></div>
+                                                    <div>Entry: <span className="font-medium">${entryPrice.toFixed(4)}</span></div>
+                                                    <div className={`${pricePnl >= 0 ? 'text-orange-400' : 'text-gray-400'}`}>
+                                                      P&L: <span className="font-medium">{pricePnl >= 0 ? '+' : ''}${pricePnl.toFixed(2)} ({pricePnlPercent >= 0 ? '+' : ''}{pricePnlPercent.toFixed(2)}%)</span>
+                                                    </div>
+                                                    <div className="text-muted-foreground mt-1 pt-1 border-t border-border">
+                                                      {data.time}
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              );
+                                            }
+                                            return null;
+                                          }}
+                                        />
+                                        <Area
+                                          type="monotone"
+                                          dataKey="price"
+                                          stroke={pnl >= 0 ? "#fb923c" : "#9ca3af"}
+                                          strokeWidth={1.5}
+                                          fill={`url(#gradient-${pos.symbol})`}
+                                          dot={false}
+                                          activeDot={{ r: 3, fill: pnl >= 0 ? "#fb923c" : "#9ca3af" }}
+                                        />
+                                        <ReferenceLine
+                                          y={entryPrice}
+                                          stroke="#fb923c"
+                                          strokeDasharray="3 3"
+                                          strokeWidth={1}
+                                          label={{ value: 'Entry', position: 'right', fill: '#fb923c', fontSize: 9 }}
+                                        />
+                                        <XAxis
+                                          dataKey="time"
+                                          tick={false}
+                                          axisLine={false}
+                                          height={0}
+                                        />
+                                        <YAxis
+                                          domain={['auto', 'auto']}
+                                          tick={false}
+                                          axisLine={false}
+                                          width={0}
+                                        />
+                                      </AreaChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           );
                         })}

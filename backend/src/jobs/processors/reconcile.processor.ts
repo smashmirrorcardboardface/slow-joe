@@ -11,6 +11,7 @@ import { AlertsService } from '../../alerts/alerts.service';
 import { RealtimeService } from '../../realtime/realtime.service';
 import { SettingsService } from '../../settings/settings.service';
 import { getBotId, getUserrefPrefix, orderBelongsToBot } from '../../common/utils/bot.utils';
+import { JobsService } from '../jobs.service';
 
 @Processor('reconcile')
 @Injectable()
@@ -27,6 +28,7 @@ export class ReconcileProcessor extends WorkerHost {
     private alertsService: AlertsService,
     private realtimeService: RealtimeService,
     private settingsService: SettingsService,
+    private jobsService: JobsService,
   ) {
     super();
     this.logger.setContext('ReconcileProcessor');
@@ -142,7 +144,10 @@ export class ReconcileProcessor extends WorkerHost {
       );
       const staleThresholdMs = fillTimeoutMinutes * 60 * 1000; // Convert to milliseconds
 
-      const openOrders = await this.exchangeService.getOpenOrders();
+      const userrefPrefix = this.getUserrefPrefixValue();
+      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+        orderBelongsToBot(order, userrefPrefix),
+      );
       const now = Date.now();
       let cancelledCount = 0;
 
@@ -153,7 +158,7 @@ export class ReconcileProcessor extends WorkerHost {
         const orderAge = now - openedAt.getTime();
         
         if (orderAge > staleThresholdMs) {
-          this.logger.warn(`Found stale order, cancelling`, {
+          this.logger.warn(`Found stale order, cancelling and converting to market order`, {
             jobId,
             orderId: order.orderId,
             symbol: order.symbol,
@@ -163,6 +168,7 @@ export class ReconcileProcessor extends WorkerHost {
           });
 
           try {
+            // Cancel the stale limit order
             await this.exchangeService.cancelOrder(order.orderId);
             cancelledCount++;
             this.logger.log(`Cancelled stale order`, {
@@ -170,6 +176,61 @@ export class ReconcileProcessor extends WorkerHost {
               orderId: order.orderId,
               symbol: order.symbol,
             });
+            
+            // For buy orders, place a market order to ensure execution
+            // (Sell orders are just cancelled - can't force a sell if we don't have the asset)
+            if (order.side === 'buy') {
+              try {
+                const remainingQty = order.remainingQuantity || order.quantity;
+                if (remainingQty > 0) {
+                  // Get current market price
+                  const ticker = await this.exchangeService.getTicker(order.symbol);
+                  const currentPrice = ticker.ask;
+                  
+                  // Check slippage (compare against original limit price)
+                  const originalLimitPrice = order.price || 0;
+                  const slippagePct = originalLimitPrice > 0 
+                    ? Math.abs((currentPrice - originalLimitPrice) / originalLimitPrice)
+                    : 0;
+                  
+                  // Allow up to 1% slippage for market order fallbacks
+                  const marketOrderMaxSlippage = 0.01; // 1%
+                  
+                  if (slippagePct <= marketOrderMaxSlippage) {
+                    // Enqueue market order execution
+                    await this.jobsService.enqueueOrderExecute(
+                      order.symbol,
+                      'buy',
+                      remainingQty,
+                      currentPrice,
+                    );
+                    this.logger.log(`Enqueued market order for stale buy order`, {
+                      jobId,
+                      symbol: order.symbol,
+                      quantity: remainingQty,
+                      currentPrice,
+                      originalLimitPrice,
+                      slippagePct: slippagePct * 100,
+                    });
+                  } else {
+                    this.logger.warn(`Skipping market order for stale buy - slippage too high`, {
+                      jobId,
+                      symbol: order.symbol,
+                      slippagePct: slippagePct * 100,
+                      marketOrderMaxSlippage: marketOrderMaxSlippage * 100,
+                      originalLimitPrice,
+                      currentPrice,
+                    });
+                  }
+                }
+              } catch (marketOrderError: any) {
+                this.logger.error(`Error placing market order for stale buy order`, marketOrderError.stack, {
+                  jobId,
+                  symbol: order.symbol,
+                  error: marketOrderError.message,
+                });
+              }
+            }
           } catch (cancelError: any) {
             this.logger.warn(`Error cancelling stale order (may already be filled/cancelled)`, {
               jobId,

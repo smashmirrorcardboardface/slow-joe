@@ -155,21 +155,48 @@ export class KrakenAdapter {
 
   private convertSymbol(symbol: string): string {
     // Convert BTC-USD to XBTUSD for Kraken
+    // Note: Kraken uses different formats - some pairs use ZUSD suffix, some use USD
+    // For pairs that don't work with simple replacement, we need explicit mapping
     const mapping: { [key: string]: string } = {
       'BTC-USD': 'XBTUSD',
       'ETH-USD': 'ETHUSD',
       'SOL-USD': 'SOLUSD',
+      'LINK-USD': 'LINKUSD',
+      'AVAX-USD': 'AVAXUSD',
+      'ADA-USD': 'ADAUSD',
+      'XRP-USD': 'XRPUSD',
+      'DOGE-USD': 'DOGEUSD',
+      'DOT-USD': 'DOTUSD',
+      // New pairs - verify these exist on Kraken
+      // MATIC-USD not available on Kraken (Polygon rebranded to POL, but POLUSD may not exist either)
+      'UNI-USD': 'UNIUSD',
+      'ATOM-USD': 'ATOMUSD',
+      'LTC-USD': 'LTCUSD',
+      'NEAR-USD': 'NEARUSD',
+      'AAVE-USD': 'AAVEUSD',
     };
     return mapping[symbol] || symbol.replace('-', '');
   }
 
   private reverseConvertSymbol(krakenSymbol: string): string {
     // Convert Kraken format back to our format
-    const reverseMapping: { [key: string]: string } = {
-      'XBTUSD': 'BTC-USD',
-      'ETHUSD': 'ETH-USD',
-      'SOLUSD': 'SOL-USD',
-    };
+      const reverseMapping: { [key: string]: string } = {
+        'XBTUSD': 'BTC-USD',
+        'ETHUSD': 'ETH-USD',
+        'SOLUSD': 'SOL-USD',
+        'LINKUSD': 'LINK-USD',
+        'AVAXUSD': 'AVAX-USD',
+        'ADAUSD': 'ADA-USD',
+        'XRPUSD': 'XRP-USD',
+        'DOGEUSD': 'DOGE-USD',
+        'DOTUSD': 'DOT-USD',
+        // MATIC-USD not available on Kraken
+        'UNIUSD': 'UNI-USD',
+        'ATOMUSD': 'ATOM-USD',
+        'LTCUSD': 'LTC-USD',
+        'NEARUSD': 'NEAR-USD',
+        'AAVEUSD': 'AAVE-USD',
+      };
     
     if (reverseMapping[krakenSymbol]) {
       return reverseMapping[krakenSymbol];
@@ -472,7 +499,13 @@ export class KrakenAdapter {
         'ADA-USD': 4,
         'XRP-USD': 4,
         'DOGE-USD': 6,
-        'DOT-USD': 4, // DOT/USD requires 4 decimal places
+        'DOT-USD': 4,
+        // 'MATIC-USD': 4,  // Not available on Kraken
+        'UNI-USD': 3,
+        'ATOM-USD': 3,
+        'LTC-USD': 2,
+        'NEAR-USD': 3,
+        'AAVE-USD': 2,
       };
       priceDecimals = symbolDefaults[symbol] || 8;
     }
@@ -731,6 +764,12 @@ export class KrakenAdapter {
       'XRP-USD': { lotSize: 0.1, lotDecimals: 1, minOrderSize: 1, priceDecimals: 4 },
       'DOGE-USD': { lotSize: 0.00000001, lotDecimals: 8, minOrderSize: 0.00000001, priceDecimals: 6 },
       'DOT-USD': { lotSize: 0.01, lotDecimals: 2, minOrderSize: 0.1, priceDecimals: 4 },
+      // 'MATIC-USD': { lotSize: 0.1, lotDecimals: 1, minOrderSize: 1, priceDecimals: 4 },  // Not available on Kraken
+      'UNI-USD': { lotSize: 0.01, lotDecimals: 2, minOrderSize: 0.1, priceDecimals: 3 },
+      'ATOM-USD': { lotSize: 0.01, lotDecimals: 2, minOrderSize: 0.1, priceDecimals: 3 },
+      'LTC-USD': { lotSize: 0.001, lotDecimals: 3, minOrderSize: 0.01, priceDecimals: 2 },
+      'NEAR-USD': { lotSize: 0.01, lotDecimals: 2, minOrderSize: 0.1, priceDecimals: 3 },
+      'AAVE-USD': { lotSize: 0.001, lotDecimals: 3, minOrderSize: 0.01, priceDecimals: 2 },
     };
 
     const defaultInfo = defaults[symbol] || { lotSize: 0.00000001, lotDecimals: 8, minOrderSize: 0.00000001, priceDecimals: 8 };

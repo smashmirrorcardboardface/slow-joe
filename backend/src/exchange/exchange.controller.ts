@@ -51,12 +51,25 @@ export class ExchangeController {
     const marketData = await Promise.all(
       universe.map(async (symbol) => {
         try {
-          // Get current ticker
-          const ticker = await this.exchangeService.getTicker(symbol);
+          // Get current ticker - handle errors gracefully for pairs that might not exist
+          const ticker = await this.exchangeService.getTicker(symbol).catch((error: any) => {
+            this.logger.warn(`Failed to fetch ticker for ${symbol}: ${error.message}`);
+            return null;
+          });
+          
+          if (!ticker) {
+            return {
+              symbol,
+              error: 'Ticker not available',
+            };
+          }
           
           // Get recent OHLCV for indicators - use cached data (will fetch fresh if cache is stale)
           // This endpoint is called frequently, so we prioritize cache to avoid rate limits
-          const ohlcv = await this.exchangeService.getOHLCV(symbol, interval, 50, true, false);
+          const ohlcv = await this.exchangeService.getOHLCV(symbol, interval, 50, true, false).catch((error: any) => {
+            this.logger.warn(`Failed to fetch OHLCV for ${symbol}: ${error.message}`);
+            return [];
+          });
           
           let indicators = null;
           if (ohlcv.length >= 26) {
@@ -71,7 +84,7 @@ export class ExchangeController {
 
           // Calculate 24h change if we have enough data
           let change24h = null;
-          if (ohlcv.length >= 4) {
+          if (ohlcv.length >= 4 && ticker) {
             const currentPrice = ticker.price;
             const price24hAgo = ohlcv[ohlcv.length - 4]?.close || currentPrice;
             change24h = ((currentPrice - price24hAgo) / price24hAgo) * 100;
@@ -79,9 +92,9 @@ export class ExchangeController {
 
           return {
             symbol,
-            price: ticker.price,
-            bid: ticker.bid,
-            ask: ticker.ask,
+            price: ticker?.price || null,
+            bid: ticker?.bid || null,
+            ask: ticker?.ask || null,
             change24h,
             indicators,
             lastUpdate: new Date().toISOString(),
@@ -99,8 +112,17 @@ export class ExchangeController {
       }),
     );
 
+    // Filter out error results but log them
+    const validMarketData = marketData.filter((data: any) => data && !data.error);
+    const failedSymbols = marketData.filter((data: any) => data && data.error);
+    
+    if (failedSymbols.length > 0) {
+      this.logger.warn(`Failed to fetch market data for ${failedSymbols.length} symbol(s): ${failedSymbols.map((d: any) => d.symbol).join(', ')}. These pairs may not be available on Kraken or may use different naming.`);
+    }
+
     return {
-      marketData,
+      success: true,
+      marketData: validMarketData,
       timestamp: new Date().toISOString(),
     };
   }

@@ -10,7 +10,7 @@ import { LoggerService } from '../../logger/logger.service';
 import { AlertsService } from '../../alerts/alerts.service';
 import { JobsService } from '../jobs.service';
 import { SettingsService } from '../../settings/settings.service';
-import { buildBotUserref, getBotId, getUserrefPrefix } from '../../common/utils/bot.utils';
+import { buildBotUserref, getBotId, getUserrefPrefix, orderBelongsToBot } from '../../common/utils/bot.utils';
 
 @Processor('order-execute')
 @Injectable()
@@ -77,6 +77,38 @@ export class OrderExecuteProcessor extends WorkerHost {
       
       if (roundedQuantity <= 0) {
         throw new Error(`Invalid quantity after rounding: ${roundedQuantity} (original: ${quantity})`);
+      }
+
+      // For buy orders, check for duplicate pending orders before placing
+      if (side === 'buy') {
+        try {
+          const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+            orderBelongsToBot(order, userrefPrefix),
+          );
+          const existingBuyOrders = openOrders.filter(
+            o => o.side === 'buy' && o.symbol === symbol
+          );
+          
+          if (existingBuyOrders.length > 0) {
+            this.logger.warn(`[DUPLICATE BUY ORDER PREVENTED] Buy order already exists for ${symbol}, skipping`, {
+              jobId: job.id,
+              symbol,
+              existingOrders: existingBuyOrders.map(o => ({
+                orderId: o.orderId,
+                quantity: o.quantity,
+                price: o.price,
+              })),
+            });
+            return; // Skip placing duplicate order
+          }
+        } catch (checkError: any) {
+          this.logger.warn(`Could not check for duplicate orders, proceeding with order placement`, {
+            jobId: job.id,
+            symbol,
+            error: checkError.message,
+          });
+          // Continue with order placement if check fails (better to place than skip)
+        }
       }
 
       // For sell orders, verify the position still exists before attempting to sell
@@ -395,35 +427,97 @@ export class OrderExecuteProcessor extends WorkerHost {
 
         // Update position
         if (side === 'buy') {
-          // Check MAX_POSITIONS before creating position
-          const currentPositions = await this.positionsService.findOpenByBot(botId);
-          const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+          // Check if we already have a position for this symbol (averaging up scenario)
+          const existingPositions = await this.positionsService.findBySymbolForBot(symbol, botId);
+          const openPosition = existingPositions.find(p => p.status === 'open');
           
-          if (currentPositions.length >= maxPositions) {
-            this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+          if (openPosition) {
+            // Averaging up: update existing position with new quantity and recalculate average entry price
+            const existingQuantity = parseFloat(openPosition.quantity);
+            const existingEntryPrice = parseFloat(openPosition.entryPrice);
+            const newQuantity = parseFloat(orderStatus.filledQuantity?.toString() || roundedQuantity.toString());
+            const newPrice = parseFloat(orderStatus.filledPrice?.toString() || limitPrice.toString());
+            
+            // Calculate weighted average entry price
+            const totalValue = (existingQuantity * existingEntryPrice) + (newQuantity * newPrice);
+            const totalQuantity = existingQuantity + newQuantity;
+            const averageEntryPrice = totalValue / totalQuantity;
+            
+            // Update position with new quantity and average entry price
+            await this.positionsService.update(openPosition.id, {
+              quantity: totalQuantity.toString(),
+              entryPrice: averageEntryPrice.toString(),
+            });
+            
+            this.logger.log(`Updated existing position (averaging up)`, {
               jobId: job.id,
               symbol,
-              currentPositions: currentPositions.length,
-              maxPositions,
-              existingPositions: currentPositions.map(p => p.symbol),
+              positionId: openPosition.id,
+              existingQuantity: existingQuantity.toFixed(8),
+              newQuantity: newQuantity.toFixed(8),
+              totalQuantity: totalQuantity.toFixed(8),
+              existingEntryPrice: existingEntryPrice.toFixed(4),
+              newPrice: newPrice.toFixed(4),
+              averageEntryPrice: averageEntryPrice.toFixed(4),
             });
-            // Don't create the position, but the trade is already recorded
-            // This is a safety check - ideally the strategy shouldn't have generated this order
-            return;
+          } else {
+            // New position: Check MAX_POSITIONS before creating
+            const currentPositions = await this.positionsService.findOpenByBot(botId);
+            const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+            
+            if (currentPositions.length >= maxPositions) {
+              this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+                jobId: job.id,
+                symbol,
+                currentPositions: currentPositions.length,
+                maxPositions,
+                existingPositions: currentPositions.map(p => p.symbol),
+              });
+              // Don't create the position, but the trade is already recorded
+              // This is a safety check - ideally the strategy shouldn't have generated this order
+              return;
+            }
+            
+            await this.positionsService.createForBot({
+              symbol,
+              quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+              entryPrice: orderStatus.filledPrice?.toString() || limitPrice.toString(),
+              status: 'open',
+            }, botId);
           }
-          
-          await this.positionsService.createForBot({
-            symbol,
-            quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
-            entryPrice: orderStatus.filledPrice?.toString() || limitPrice.toString(),
-            status: 'open',
-          }, botId);
         } else {
-          // Close position
+          // Handle sell order - check if it's a partial or full exit
           const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
-          for (const pos of positions) {
-            if (pos.status === 'open') {
-              await this.positionsService.closePosition(pos.id);
+          const openPosition = positions.find(p => p.status === 'open');
+          
+          if (openPosition) {
+            const filledQty = parseFloat(orderStatus.filledQuantity?.toString() || roundedQuantity.toString());
+            const positionQty = parseFloat(openPosition.quantity);
+            
+            // Check if this is a partial sell (scaling out) or full exit
+            if (filledQty < positionQty * 0.95) {
+              // Partial sell: update position quantity
+              const remainingQty = positionQty - filledQty;
+              await this.positionsService.update(openPosition.id, {
+                quantity: remainingQty.toString(),
+              });
+              
+              this.logger.log(`Partial sell executed (scaling out) - remaining quantity: ${remainingQty.toFixed(8)}`, {
+                jobId: job.id,
+                symbol,
+                filledQuantity: filledQty.toFixed(8),
+                originalQuantity: positionQty.toFixed(8),
+                remainingQuantity: remainingQty.toFixed(8),
+              });
+            } else {
+              // Full exit: close position
+              await this.positionsService.closePosition(openPosition.id);
+              this.logger.log(`Full sell executed - position closed`, {
+                jobId: job.id,
+                symbol,
+                filledQuantity: filledQty.toFixed(8),
+                originalQuantity: positionQty.toFixed(8),
+              });
             }
           }
           
@@ -483,32 +577,95 @@ export class OrderExecuteProcessor extends WorkerHost {
               exchangeOrderId: orderResult.orderId,
             });
             if (side === 'buy') {
-              // Check MAX_POSITIONS before creating position
-              const currentPositions = await this.positionsService.findOpenByBot(botId);
-              const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+              // Check if we already have a position for this symbol (averaging up scenario)
+              const existingPositions = await this.positionsService.findBySymbolForBot(symbol, botId);
+              const openPosition = existingPositions.find(p => p.status === 'open');
               
-              if (currentPositions.length >= maxPositions) {
-                this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+              if (openPosition) {
+                // Averaging up: update existing position with new quantity and recalculate average entry price
+                const existingQuantity = parseFloat(openPosition.quantity);
+                const existingEntryPrice = parseFloat(openPosition.entryPrice);
+                const newQuantity = parseFloat(finalStatus.filledQuantity?.toString() || roundedQuantity.toString());
+                const newPrice = parseFloat(finalStatus.filledPrice?.toString() || limitPrice.toString());
+                
+                // Calculate weighted average entry price
+                const totalValue = (existingQuantity * existingEntryPrice) + (newQuantity * newPrice);
+                const totalQuantity = existingQuantity + newQuantity;
+                const averageEntryPrice = totalValue / totalQuantity;
+                
+                // Update position with new quantity and average entry price
+                await this.positionsService.update(openPosition.id, {
+                  quantity: totalQuantity.toString(),
+                  entryPrice: averageEntryPrice.toString(),
+                });
+                
+                this.logger.log(`Updated existing position (averaging up) after cancellation check`, {
                   jobId: job.id,
                   symbol,
-                  currentPositions: currentPositions.length,
-                  maxPositions,
-                  existingPositions: currentPositions.map(p => p.symbol),
+                  positionId: openPosition.id,
+                  existingQuantity: existingQuantity.toFixed(8),
+                  newQuantity: newQuantity.toFixed(8),
+                  totalQuantity: totalQuantity.toFixed(8),
+                  existingEntryPrice: existingEntryPrice.toFixed(4),
+                  newPrice: newPrice.toFixed(4),
+                  averageEntryPrice: averageEntryPrice.toFixed(4),
                 });
-                return;
+              } else {
+                // New position: Check MAX_POSITIONS before creating
+                const currentPositions = await this.positionsService.findOpenByBot(botId);
+                const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+                
+                if (currentPositions.length >= maxPositions) {
+                  this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+                    jobId: job.id,
+                    symbol,
+                    currentPositions: currentPositions.length,
+                    maxPositions,
+                    existingPositions: currentPositions.map(p => p.symbol),
+                  });
+                  return;
+                }
+                
+                await this.positionsService.createForBot({
+                  symbol,
+                  quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+                  entryPrice: finalStatus.filledPrice?.toString() || limitPrice.toString(),
+                  status: 'open',
+                }, botId);
               }
-              
-              await this.positionsService.createForBot({
-                symbol,
-                quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
-                entryPrice: finalStatus.filledPrice?.toString() || limitPrice.toString(),
-                status: 'open',
-              }, botId);
             } else {
+              // Handle sell order - check if it's a partial or full exit
               const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
-              for (const pos of positions) {
-                if (pos.status === 'open') {
-                  await this.positionsService.closePosition(pos.id);
+              const openPosition = positions.find(p => p.status === 'open');
+              
+              if (openPosition) {
+                const filledQty = parseFloat(finalStatus.filledQuantity?.toString() || roundedQuantity.toString());
+                const positionQty = parseFloat(openPosition.quantity);
+                
+                // Check if this is a partial sell (scaling out) or full exit
+                if (filledQty < positionQty * 0.95) {
+                  // Partial sell: update position quantity
+                  const remainingQty = positionQty - filledQty;
+                  await this.positionsService.update(openPosition.id, {
+                    quantity: remainingQty.toString(),
+                  });
+                  
+                  this.logger.log(`Partial sell executed (scaling out) during cancellation check - remaining quantity: ${remainingQty.toFixed(8)}`, {
+                    jobId: job.id,
+                    symbol,
+                    filledQuantity: filledQty.toFixed(8),
+                    originalQuantity: positionQty.toFixed(8),
+                    remainingQuantity: remainingQty.toFixed(8),
+                  });
+                } else {
+                  // Full exit: close position
+                  await this.positionsService.closePosition(openPosition.id);
+                  this.logger.log(`Full sell executed during cancellation check - position closed`, {
+                    jobId: job.id,
+                    symbol,
+                    filledQuantity: filledQty.toFixed(8),
+                    originalQuantity: positionQty.toFixed(8),
+                  });
                 }
               }
               
@@ -602,33 +759,95 @@ export class OrderExecuteProcessor extends WorkerHost {
 
           // Update position
           if (side === 'buy') {
-            // Check MAX_POSITIONS before creating position
-            const currentPositions = await this.positionsService.findOpenByBot(botId);
-            const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+            // Check if we already have a position for this symbol (averaging up scenario)
+            const existingPositions = await this.positionsService.findBySymbolForBot(symbol, botId);
+            const openPosition = existingPositions.find(p => p.status === 'open');
             
-            if (currentPositions.length >= maxPositions) {
-              this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+            if (openPosition) {
+              // Averaging up: update existing position with new quantity and recalculate average entry price
+              const existingQuantity = parseFloat(openPosition.quantity);
+              const existingEntryPrice = parseFloat(openPosition.entryPrice);
+              const newQuantity = parseFloat(marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString());
+              const newPrice = parseFloat(marketOrderStatus.filledPrice?.toString() || expectedPrice.toString());
+              
+              // Calculate weighted average entry price
+              const totalValue = (existingQuantity * existingEntryPrice) + (newQuantity * newPrice);
+              const totalQuantity = existingQuantity + newQuantity;
+              const averageEntryPrice = totalValue / totalQuantity;
+              
+              // Update position with new quantity and average entry price
+              await this.positionsService.update(openPosition.id, {
+                quantity: totalQuantity.toString(),
+                entryPrice: averageEntryPrice.toString(),
+              });
+              
+              this.logger.log(`Updated existing position (averaging up) via market order`, {
                 jobId: job.id,
                 symbol,
-                currentPositions: currentPositions.length,
-                maxPositions,
-                existingPositions: currentPositions.map(p => p.symbol),
+                positionId: openPosition.id,
+                existingQuantity: existingQuantity.toFixed(8),
+                newQuantity: newQuantity.toFixed(8),
+                totalQuantity: totalQuantity.toFixed(8),
+                existingEntryPrice: existingEntryPrice.toFixed(4),
+                newPrice: newPrice.toFixed(4),
+                averageEntryPrice: averageEntryPrice.toFixed(4),
               });
-              return;
+            } else {
+              // New position: Check MAX_POSITIONS before creating
+              const currentPositions = await this.positionsService.findOpenByBot(botId);
+              const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
+              
+              if (currentPositions.length >= maxPositions) {
+                this.logger.warn(`Cannot create position - MAX_POSITIONS (${maxPositions}) already reached`, {
+                  jobId: job.id,
+                  symbol,
+                  currentPositions: currentPositions.length,
+                  maxPositions,
+                  existingPositions: currentPositions.map(p => p.symbol),
+                });
+                return;
+              }
+              
+              await this.positionsService.createForBot({
+                symbol,
+                quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+                entryPrice: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
+                status: 'open',
+              }, botId);
             }
-            
-            await this.positionsService.createForBot({
-              symbol,
-              quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
-              entryPrice: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
-              status: 'open',
-            }, botId);
           } else {
-            // Close position
+            // Handle sell order - check if it's a partial or full exit
             const positions = await this.positionsService.findBySymbolForBot(symbol, botId);
-            for (const pos of positions) {
-              if (pos.status === 'open') {
-                await this.positionsService.closePosition(pos.id);
+            const openPosition = positions.find(p => p.status === 'open');
+            
+            if (openPosition) {
+              const filledQty = parseFloat(marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString());
+              const positionQty = parseFloat(openPosition.quantity);
+              
+              // Check if this is a partial sell (scaling out) or full exit
+              if (filledQty < positionQty * 0.95) {
+                // Partial sell: update position quantity
+                const remainingQty = positionQty - filledQty;
+                await this.positionsService.update(openPosition.id, {
+                  quantity: remainingQty.toString(),
+                });
+                
+                this.logger.log(`Partial sell executed (scaling out) via market order - remaining quantity: ${remainingQty.toFixed(8)}`, {
+                  jobId: job.id,
+                  symbol,
+                  filledQuantity: filledQty.toFixed(8),
+                  originalQuantity: positionQty.toFixed(8),
+                  remainingQuantity: remainingQty.toFixed(8),
+                });
+              } else {
+                // Full exit: close position
+                await this.positionsService.closePosition(openPosition.id);
+                this.logger.log(`Full sell executed via market order - position closed`, {
+                  jobId: job.id,
+                  symbol,
+                  filledQuantity: filledQty.toFixed(8),
+                  originalQuantity: positionQty.toFixed(8),
+                });
               }
             }
             

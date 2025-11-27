@@ -261,8 +261,19 @@ export class StrategyService {
 
     for (const symbol of universe) {
       try {
-        const ohlcv = await this.exchangeService.getOHLCV(symbol, interval, 50);
+        const ohlcv = await this.exchangeService.getOHLCV(symbol, interval, 50).catch((error: any) => {
+          this.logger.warn(`Failed to fetch OHLCV for ${symbol}: ${error.message}. This pair may not be available on Kraken.`, {
+            symbol,
+            error: error.message,
+          });
+          return [];
+        });
+        
         if (ohlcv.length < 26) {
+          if (ohlcv.length === 0) {
+            // Pair doesn't exist or failed to fetch - skip silently (already logged)
+            continue;
+          }
           this.logger.debug(`Not enough data for symbol`, { symbol, candleCount: ohlcv.length });
           continue;
         }
@@ -1406,6 +1417,27 @@ export class StrategyService {
         }
         
         if (quantity > 0) {
+          // Re-check for pending orders right before adding trade (prevent race conditions)
+          try {
+            const currentOpenOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+              orderBelongsToBot(order, userrefPrefix),
+            );
+            const currentPendingBuys = new Set(
+              currentOpenOrders.filter(o => o.side === 'buy').map(o => o.symbol)
+            );
+            if (currentPendingBuys.has(symbol)) {
+              this.logger.log(`Skipping symbol - buy order appeared on exchange since initial check`, {
+                symbol,
+              });
+              continue;
+            }
+          } catch (recheckError: any) {
+            this.logger.warn(`Could not re-check open orders before adding trade, proceeding`, {
+              symbol,
+              error: recheckError.message,
+            });
+          }
+          
           const orderValue = quantity * ticker.price;
           
           // Ensure order value doesn't exceed available cash (accounting for fees)
@@ -1492,19 +1524,43 @@ export class StrategyService {
       
       // Find held positions that are still in the top signals (strong opportunities)
       // Only consider positions that are profitable or at least not losing significantly
-      const topSignalsForAveraging = signals.slice(0, Math.min(3, signals.length)); // Top 3 signals
+      // Use top 5 signals for averaging up (more flexible than top 3)
+      const topSignalsForAveraging = signals.slice(0, Math.min(5, signals.length)); // Top 5 signals
+      
+      this.logger.log(`[AVERAGING UP] Checking opportunities: topSignals=[${topSignalsForAveraging.map(s => s.symbol).join(', ')}], positions=[${currentPositions.map(p => p.symbol).join(', ')}], remainingCash=$${remainingCash.toFixed(2)}`, {
+        topSignalsForAveraging: topSignalsForAveraging.map(s => ({ symbol: s.symbol, score: s.indicators.score.toFixed(3) })),
+        currentPositions: currentPositions.map(p => p.symbol),
+        availableCash: availableCash.toFixed(4),
+        remainingCash: remainingCash.toFixed(4),
+      });
       
       for (const position of currentPositions) {
         const signal = signals.find(s => s.symbol === position.symbol);
-        if (!signal) continue;
+        if (!signal) {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - not in signals array`, {
+            symbol: position.symbol,
+            signalsCount: signals.length,
+            signalsSymbols: signals.map(s => s.symbol),
+          });
+          continue;
+        }
         
         // Check if it's in the top signals
         const isTopSignal = topSignalsForAveraging.some(s => s.symbol === position.symbol);
-        if (!isTopSignal) continue;
+        if (!isTopSignal) {
+          const positionRank = signals.findIndex(s => s.symbol === position.symbol) + 1;
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - ranked ${positionRank}, only top ${topSignalsForAveraging.length} considered`, {
+            symbol: position.symbol,
+            positionRank,
+            topSignalsCount: topSignalsForAveraging.length,
+            topSignals: topSignalsForAveraging.map(s => s.symbol),
+          });
+          continue;
+        }
         
         // Check if there's already a pending buy order for this symbol
         if (pendingBuySymbols.has(position.symbol)) {
-          this.logger.debug(`Skipping averaging up - buy order already pending`, {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - buy order already pending`, {
             symbol: position.symbol,
           });
           continue;
@@ -1513,7 +1569,7 @@ export class StrategyService {
         // Check if we've already added a buy trade for this symbol in this evaluation
         const alreadyAdded = trades.some(t => t.side === 'buy' && t.symbol === position.symbol);
         if (alreadyAdded) {
-          this.logger.debug(`Skipping averaging up - buy trade already added`, {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - buy trade already added`, {
             symbol: position.symbol,
           });
           continue;
@@ -1529,9 +1585,11 @@ export class StrategyService {
         // - Profitable (profit > 0%), OR
         // - Not losing too much (loss < 5%)
         if (profitPct <= -5) {
-          this.logger.debug(`Skipping averaging up - position losing too much`, {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - losing too much (${profitPct.toFixed(2)}%)`, {
             symbol: position.symbol,
             profitPct: profitPct.toFixed(2),
+            entryPrice: entryPrice.toFixed(4),
+            currentPrice: currentPrice.toFixed(4),
           });
           continue;
         }
@@ -1541,7 +1599,7 @@ export class StrategyService {
         const maxAdditionalValue = maxPositionValue - currentPositionValue;
         
         if (maxAdditionalValue < minOrderUsd) {
-          this.logger.debug(`Skipping averaging up - position already at max size`, {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - position already at max size (${currentPositionValue.toFixed(2)} / ${maxPositionValue.toFixed(2)})`, {
             symbol: position.symbol,
             currentPositionValue: currentPositionValue.toFixed(2),
             maxPositionValue: maxPositionValue.toFixed(2),
@@ -1553,14 +1611,29 @@ export class StrategyService {
         // Calculate how much to add (use a conservative fraction of remaining cash)
         // Use 50% of MAX_ALLOC_FRACTION to be conservative when averaging up
         const averagingAllocFraction = maxAllocFraction * 0.5;
-        const alloc = Math.min(remainingCash * averagingAllocFraction, maxAdditionalValue);
+        let alloc = Math.min(remainingCash * averagingAllocFraction, maxAdditionalValue);
+        
+        // If the conservative allocation is below MIN_ORDER_USD, but we have enough cash,
+        // boost it to at least MIN_ORDER_USD to ensure we can execute the trade
+        // This allows averaging up even when remaining cash is limited
+        if (alloc < minOrderUsd && remainingCash >= minOrderUsd && maxAdditionalValue >= minOrderUsd) {
+          alloc = Math.min(minOrderUsd, maxAdditionalValue);
+          this.logger.log(`[AVERAGING UP] Boosting allocation for ${position.symbol} to meet MIN_ORDER_USD: $${alloc.toFixed(2)}`, {
+            symbol: position.symbol,
+            originalAlloc: (remainingCash * averagingAllocFraction).toFixed(2),
+            boostedAlloc: alloc.toFixed(2),
+            minOrderUsd,
+            remainingCash: remainingCash.toFixed(2),
+          });
+        }
         
         if (alloc < minOrderUsd) {
-          this.logger.debug(`Skipping averaging up - allocation too small`, {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - allocation too small ($${alloc.toFixed(2)} < $${minOrderUsd})`, {
             symbol: position.symbol,
             alloc: alloc.toFixed(2),
             minOrderUsd,
             remainingCash: remainingCash.toFixed(2),
+            maxAdditionalValue: maxAdditionalValue.toFixed(2),
           });
           continue;
         }
@@ -1569,8 +1642,16 @@ export class StrategyService {
         const lotInfo = await this.exchangeService.getLotSizeInfo(position.symbol);
         const minOrderSizeUsd = Math.max(lotInfo.minOrderSize * ticker.price, minOrderUsd);
         
+        this.logger.log(`[AVERAGING UP] Checking ${position.symbol}: alloc=$${alloc.toFixed(2)}, minOrderSizeUsd=$${minOrderSizeUsd.toFixed(2)}, price=$${ticker.price.toFixed(4)}, lotSize=${lotInfo.minOrderSize}`, {
+          symbol: position.symbol,
+          alloc: alloc.toFixed(2),
+          minOrderSizeUsd: minOrderSizeUsd.toFixed(2),
+          price: ticker.price.toFixed(4),
+          lotSize: lotInfo.minOrderSize,
+        });
+        
         if (alloc < minOrderSizeUsd) {
-          this.logger.debug(`Skipping averaging up - cannot meet minimum order size`, {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - cannot meet minimum order size ($${alloc.toFixed(2)} < $${minOrderSizeUsd.toFixed(2)})`, {
             symbol: position.symbol,
             alloc: alloc.toFixed(2),
             minOrderSizeUsd: minOrderSizeUsd.toFixed(2),
@@ -1579,7 +1660,72 @@ export class StrategyService {
         }
         
         // Calculate quantity to add
-        const quantity = await this.calculateSize(remainingCash, ticker.price, position.symbol, alloc / remainingCash);
+        // For averaging up with a boosted allocation, we need to ensure the quantity meets MIN_ORDER_USD
+        // The issue: roundToLotSize rounds DOWN, which can reduce order value below MIN_ORDER_USD
+        // Solution: Calculate minimum quantity needed, round UP if needed to meet MIN_ORDER_USD
+        
+        // Calculate minimum quantity needed to meet MIN_ORDER_USD
+        const minQtyForMinOrderUsd = minOrderUsd / ticker.price;
+        
+        // Round UP to ensure we meet minimum order value
+        // Calculate how many lot size increments we need
+        const lotSizeIncrements = Math.ceil(minQtyForMinOrderUsd / lotInfo.lotSize);
+        let quantity = lotSizeIncrements * lotInfo.lotSize;
+        
+        // Ensure we meet minimum order size
+        if (quantity < lotInfo.minOrderSize) {
+          quantity = lotInfo.minOrderSize;
+        }
+        
+        // Round to proper decimal places to avoid floating point issues
+        const multiplier = Math.pow(10, lotInfo.lotDecimals);
+        quantity = Math.floor(quantity * multiplier) / multiplier;
+        
+        let orderValue = quantity * ticker.price;
+        
+        // If still below minimum, add one more lot size increment
+        if (orderValue < minOrderUsd) {
+          quantity = quantity + lotInfo.lotSize;
+          // Re-round to proper decimal places
+          quantity = Math.floor(quantity * multiplier) / multiplier;
+          orderValue = quantity * ticker.price;
+        }
+        
+        // Also check alloc-based quantity (might be larger)
+        const allocBasedQty = alloc / ticker.price;
+        const allocBasedQtyRounded = await this.exchangeService.roundToLotSize(position.symbol, allocBasedQty);
+        const allocBasedOrderValue = allocBasedQtyRounded * ticker.price;
+        
+        // Use the larger quantity that meets requirements
+        if (allocBasedQtyRounded > quantity && allocBasedOrderValue >= minOrderUsd) {
+          quantity = allocBasedQtyRounded;
+          orderValue = allocBasedOrderValue;
+        }
+        
+        // Final validation
+        if (orderValue < minOrderUsd || quantity < lotInfo.minOrderSize) {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - calculated quantity doesn't meet requirements`, {
+            symbol: position.symbol,
+            quantity: quantity.toFixed(8),
+            orderValue: orderValue.toFixed(2),
+            minOrderUsd,
+            minOrderSize: lotInfo.minOrderSize,
+            minQtyForMinOrderUsd: minQtyForMinOrderUsd.toFixed(8),
+            allocBasedQty: allocBasedQty.toFixed(8),
+            allocBasedQtyRounded: allocBasedQtyRounded.toFixed(8),
+            allocBasedOrderValue: allocBasedOrderValue.toFixed(2),
+            reason: orderValue < minOrderUsd ? `orderValue ($${orderValue.toFixed(2)}) < minOrderUsd ($${minOrderUsd})` : `quantity (${quantity.toFixed(8)}) < minOrderSize (${lotInfo.minOrderSize})`,
+          });
+          continue;
+        }
+        
+        this.logger.log(`[AVERAGING UP] Calculated quantity for ${position.symbol}: ${quantity.toFixed(8)} (orderValue=$${orderValue.toFixed(2)})`, {
+          symbol: position.symbol,
+          quantity: quantity.toFixed(8),
+          alloc: alloc.toFixed(2),
+          price: ticker.price.toFixed(4),
+          orderValue: orderValue.toFixed(2),
+        });
         
         if (quantity > 0) {
           const orderValue = quantity * ticker.price;
@@ -1589,7 +1735,7 @@ export class StrategyService {
           const maxOrderValue = remainingCash - feeBuffer;
           
           if (orderValue > maxOrderValue) {
-            this.logger.debug(`Skipping averaging up - order value exceeds available cash`, {
+            this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - order value exceeds available cash ($${orderValue.toFixed(2)} > $${maxOrderValue.toFixed(2)})`, {
               symbol: position.symbol,
               orderValue: orderValue.toFixed(4),
               maxOrderValue: maxOrderValue.toFixed(4),
@@ -1598,11 +1744,32 @@ export class StrategyService {
             continue;
           }
           
+          // Re-check for pending orders right before adding trade (prevent race conditions)
+          try {
+            const currentOpenOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+              orderBelongsToBot(order, userrefPrefix),
+            );
+            const currentPendingBuys = new Set(
+              currentOpenOrders.filter(o => o.side === 'buy').map(o => o.symbol)
+            );
+            if (currentPendingBuys.has(position.symbol)) {
+              this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - buy order appeared on exchange since initial check`, {
+                symbol: position.symbol,
+              });
+              continue;
+            }
+          } catch (recheckError: any) {
+            this.logger.warn(`[AVERAGING UP] Could not re-check open orders before adding trade, proceeding`, {
+              symbol: position.symbol,
+              error: recheckError.message,
+            });
+          }
+          
           allocatedCash += orderValue;
           
           trades.push({ symbol: position.symbol, side: 'buy', quantity });
           
-          this.logger.log(`Adding to existing position (averaging up)`, {
+          this.logger.log(`[AVERAGING UP] Adding to ${position.symbol}: +${quantity.toFixed(8)} @ $${currentPrice.toFixed(4)} (current entry: $${entryPrice.toFixed(4)}, P&L: ${profitPct.toFixed(2)}%)`, {
             symbol: position.symbol,
             currentQuantity: parseFloat(position.quantity).toFixed(8),
             additionalQuantity: quantity.toFixed(8),
@@ -1617,6 +1784,200 @@ export class StrategyService {
           });
         }
       }
+      
+      // Summary log for averaging up section
+      const averagingUpTrades = trades.filter(t => t.side === 'buy' && currentPositions.some(p => p.symbol === t.symbol));
+      if (averagingUpTrades.length > 0) {
+        this.logger.log(`[AVERAGING UP] Summary: ${averagingUpTrades.length} averaging up trade(s) added`, {
+          trades: averagingUpTrades.map(t => ({ symbol: t.symbol, quantity: t.quantity.toFixed(8) })),
+        });
+      } else {
+        this.logger.log(`[AVERAGING UP] Summary: No averaging up trades added (checked ${currentPositions.length} position(s))`);
+      }
+    }
+
+    // SCALING OUT: Trim positions when signals weaken but position is still profitable
+    // This is the opposite of averaging up - reduce exposure to lock in profits while maintaining some position
+    // Only check positions that are due for evaluation (per-position evaluation cycle)
+    // Reuse duePositions and duePositionSymbols from earlier in the function
+    
+    for (const position of currentPositions) {
+      // Skip if position is already marked for exit
+      if (trades.some(t => t.side === 'sell' && t.symbol === position.symbol)) {
+        continue;
+      }
+      
+      // Only check positions that are due for evaluation
+      if (!duePositionSymbols.has(position.symbol)) {
+        continue;
+      }
+      
+      // Check if position is in signals and get its ranking
+      const signal = signals.find(s => s.symbol === position.symbol);
+      if (!signal) {
+        // Position not in signals - handled by "not in target" exit logic
+        continue;
+      }
+      
+      // Get position ranking
+      const positionRank = signals.findIndex(s => s.symbol === position.symbol) + 1;
+      const isInTop5 = positionRank <= 5;
+      
+      // Only consider scaling out if position is NOT in top 5 (signal has weakened)
+      if (isInTop5) {
+        continue;
+      }
+      
+      // Get current price and calculate P&L
+      let currentPrice = 0;
+      let profitPct = 0;
+      let isProfitable = false;
+      let currentPositionValue = 0;
+      
+      try {
+        const ticker = await this.exchangeService.getTicker(position.symbol);
+        currentPrice = ticker.price;
+        const entryPrice = parseFloat(position.entryPrice);
+        profitPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+        isProfitable = profitPct > 0;
+        currentPositionValue = parseFloat(position.quantity) * currentPrice;
+      } catch (error: any) {
+        this.logger.warn(`[SCALING OUT] Could not get ticker for ${position.symbol}`, {
+          symbol: position.symbol,
+          error: error.message,
+        });
+        continue;
+      }
+      
+      // Scale out in two scenarios:
+      // 1. Profitable positions that weaken (lock in gains)
+      // 2. Losing positions that weaken (cut losses)
+      const minProfitForScalingOut = 2.0; // Minimum 2% profit to consider scaling out profitable positions
+      const maxLossForScalingOut = -1.0; // Maximum -1% loss to consider scaling out losing positions (cut losses)
+      
+      const shouldScaleOutProfitable = isProfitable && profitPct >= minProfitForScalingOut;
+      const shouldScaleOutLosing = !isProfitable && profitPct <= maxLossForScalingOut;
+      
+      if (!shouldScaleOutProfitable && !shouldScaleOutLosing) {
+        this.logger.debug(`[SCALING OUT] Skipping ${position.symbol} - doesn't meet scaling out criteria (P&L: ${profitPct.toFixed(2)}%, profit threshold: ${minProfitForScalingOut}%, loss threshold: ${maxLossForScalingOut}%)`, {
+          symbol: position.symbol,
+          profitPct: profitPct.toFixed(2),
+          positionRank,
+          isProfitable,
+          minProfitForScalingOut,
+          maxLossForScalingOut,
+        });
+        continue;
+      }
+      
+      // Check minimum hold period (let positions develop before trimming)
+      const positionAgeMs = Date.now() - position.openedAt.getTime();
+      const positionAgeHours = positionAgeMs / (1000 * 60 * 60);
+      const minHoldCyclesForScalingOut = 4; // Minimum 4 cycles (8-12 hours) before scaling out
+      const minHoldHoursForScalingOut = cadenceHours * minHoldCyclesForScalingOut;
+      
+      if (positionAgeHours < minHoldHoursForScalingOut) {
+        this.logger.debug(`[SCALING OUT] Skipping ${position.symbol} - position too new (${positionAgeHours.toFixed(1)}h < ${minHoldHoursForScalingOut.toFixed(1)}h)`, {
+          symbol: position.symbol,
+          positionAgeHours: positionAgeHours.toFixed(2),
+          minHoldHours: minHoldHoursForScalingOut.toFixed(2),
+        });
+        continue;
+      }
+      
+      // Check if there's already a pending sell order for this symbol
+      if (pendingSellSymbols.has(position.symbol)) {
+        this.logger.debug(`[SCALING OUT] Skipping ${position.symbol} - sell order already pending`, {
+          symbol: position.symbol,
+        });
+        continue;
+      }
+      
+      // Calculate how much to trim (25-50% of position, configurable)
+      const trimPercentage = 0.30; // Trim 30% of position
+      const currentQuantity = parseFloat(position.quantity);
+      const trimQuantity = currentQuantity * trimPercentage;
+      
+      // Get lot size info to ensure we can trim properly
+      const lotInfo = await this.exchangeService.getLotSizeInfo(position.symbol);
+      const trimmedQuantityRounded = await this.exchangeService.roundToLotSize(position.symbol, trimQuantity);
+      
+      // Ensure trimmed quantity meets minimum order size
+      if (trimmedQuantityRounded < lotInfo.minOrderSize) {
+        this.logger.debug(`[SCALING OUT] Skipping ${position.symbol} - trimmed quantity too small (${trimmedQuantityRounded.toFixed(8)} < ${lotInfo.minOrderSize})`, {
+          symbol: position.symbol,
+          trimmedQuantity: trimmedQuantityRounded.toFixed(8),
+          minOrderSize: lotInfo.minOrderSize,
+        });
+        continue;
+      }
+      
+      // Ensure remaining quantity is still meaningful (at least 50% of original)
+      const remainingQuantity = currentQuantity - trimmedQuantityRounded;
+      if (remainingQuantity < lotInfo.minOrderSize) {
+        this.logger.debug(`[SCALING OUT] Skipping ${position.symbol} - remaining quantity would be too small`, {
+          symbol: position.symbol,
+          remainingQuantity: remainingQuantity.toFixed(8),
+          minOrderSize: lotInfo.minOrderSize,
+        });
+        continue;
+      }
+      
+      // Calculate trimmed value
+      const trimmedValue = trimmedQuantityRounded * currentPrice;
+      const minOrderUsd = await this.settingsService.getSettingNumber('MIN_ORDER_USD');
+      
+      if (trimmedValue < minOrderUsd) {
+        this.logger.debug(`[SCALING OUT] Skipping ${position.symbol} - trimmed value too small ($${trimmedValue.toFixed(2)} < $${minOrderUsd})`, {
+          symbol: position.symbol,
+          trimmedValue: trimmedValue.toFixed(2),
+          minOrderUsd,
+        });
+        continue;
+      }
+      
+      // Add sell trade for trimmed quantity
+      trades.push({
+        symbol: position.symbol,
+        side: 'sell',
+        quantity: trimmedQuantityRounded,
+      });
+      
+      const reason = shouldScaleOutProfitable 
+        ? `lock in profits (${profitPct.toFixed(2)}% gain)`
+        : `cut losses (${profitPct.toFixed(2)}% loss)`;
+      
+      this.logger.log(`[SCALING OUT] Trimming ${position.symbol}: selling ${trimmedQuantityRounded.toFixed(8)} (${(trimPercentage * 100).toFixed(0)}%) to ${reason}`, {
+        symbol: position.symbol,
+        currentQuantity: currentQuantity.toFixed(8),
+        trimmedQuantity: trimmedQuantityRounded.toFixed(8),
+        remainingQuantity: remainingQuantity.toFixed(8),
+        trimPercentage: (trimPercentage * 100).toFixed(0),
+        profitPct: profitPct.toFixed(2),
+        reason: shouldScaleOutProfitable ? 'lock_in_profits' : 'cut_losses',
+        currentPrice: currentPrice.toFixed(4),
+        trimmedValue: trimmedValue.toFixed(2),
+        positionRank,
+        signalScore: signal.indicators.score.toFixed(3),
+      });
+    }
+    
+    // Summary log for scaling out section
+    // Only count sells that are partial exits (not full exits from other logic)
+    const scalingOutTrades = trades.filter(t => {
+      if (t.side !== 'sell') return false;
+      const position = currentPositions.find(p => p.symbol === t.symbol);
+      if (!position) return false;
+      // Check if this is a partial exit (trimmed quantity < full position quantity)
+      const positionQuantity = parseFloat(position.quantity);
+      const sellQuantity = t.quantity;
+      return sellQuantity < positionQuantity * 0.95; // Allow 5% tolerance for rounding
+    });
+    
+    if (scalingOutTrades.length > 0) {
+      this.logger.log(`[SCALING OUT] Summary: ${scalingOutTrades.length} scaling out trade(s) added`, {
+        trades: scalingOutTrades.map(t => ({ symbol: t.symbol, quantity: t.quantity.toFixed(8) })),
+      });
     }
 
     const tradesSummary = trades.length > 0 
