@@ -572,9 +572,65 @@ export class StrategyService {
       adjustedPositionCount = maxPositions;
     }
     
+    // Check for existing open orders to avoid duplicates (needed early for position counting)
+    let pendingSellSymbols = new Set<string>();
+    let pendingBuySymbols = new Set<string>();
+    let openOrdersFetchFailed = false;
+    try {
+      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+        orderBelongsToBot(order, userrefPrefix),
+      );
+      pendingSellSymbols = new Set(
+        openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
+      );
+      pendingBuySymbols = new Set(
+        openOrders.filter(o => o.side === 'buy').map(o => o.symbol)
+      );
+      this.logger.debug(`Fetched open orders for position counting`, {
+        totalOrders: openOrders.length,
+        pendingBuyCount: pendingBuySymbols.size,
+        pendingBuySymbols: Array.from(pendingBuySymbols),
+        pendingSellCount: pendingSellSymbols.size,
+        pendingSellSymbols: Array.from(pendingSellSymbols),
+      });
+    } catch (error: any) {
+      openOrdersFetchFailed = true;
+      this.logger.warn(`Could not fetch open orders for duplicate check - this may cause duplicate orders`, {
+        error: error.message,
+        warning: 'Position counting may be inaccurate without open orders data',
+      });
+    }
+    
+    // Count pending buy orders as "positions" for MAX_POSITIONS enforcement
+    // This prevents placing multiple buy orders when MAX_POSITIONS=1
+    const pendingBuyCount = pendingBuySymbols.size;
+    const totalPositionCount = adjustedPositionCount + pendingBuyCount;
+    
     // Calculate how many new positions we can open
-    let availableSlots = Math.max(0, maxPositions - adjustedPositionCount);
+    let availableSlots: number;
+    
+    // If we couldn't fetch open orders, be conservative - assume we might have pending orders
+    // This prevents placing orders when we're not sure about the current state
+    if (openOrdersFetchFailed) {
+      this.logger.warn(`Open orders fetch failed - being conservative with position counting`, {
+        adjustedPositionCount,
+        pendingBuyCount,
+        totalPositionCount,
+        maxPositions,
+        warning: 'Cannot verify if slots are available - will not place new buy orders',
+      });
+      // Set availableSlots to 0 to prevent placing orders when we can't verify state
+      availableSlots = 0;
+    } else {
+      // Calculate how many new positions we can open
+      availableSlots = Math.max(0, maxPositions - totalPositionCount);
+    }
     const currentHoldings = new Set(currentPositions.map((p) => p.symbol));
+    
+    // Also include symbols with pending buy orders in holdings check
+    for (const symbol of pendingBuySymbols) {
+      currentHoldings.add(symbol);
+    }
     
     // Filter out signals for positions we already hold, then select top K
     const availableSignals = signals.filter(s => !currentHoldings.has(s.symbol));
@@ -583,9 +639,11 @@ export class StrategyService {
     let targetAssets = availableSignals.slice(0, topK).map((s) => s.symbol);
     
     const topSignals = signals.slice(0, Math.min(5, signals.length)).map(s => `${s.symbol} (score: ${s.indicators.score.toFixed(3)})`).join(', ');
-    this.logger.log(`Position selection: maxPositions=${maxPositions}, current=${adjustedPositionCount}, availableSlots=${availableSlots}, topK=${topK}, targetAssets=[${targetAssets.join(', ')}], topSignals=[${topSignals}]`, {
+    this.logger.log(`Position selection: maxPositions=${maxPositions}, current=${adjustedPositionCount}, pendingBuys=${pendingBuyCount}, total=${totalPositionCount}, availableSlots=${availableSlots}, topK=${topK}, targetAssets=[${targetAssets.join(', ')}], topSignals=[${topSignals}]`, {
       maxPositions,
       currentPositionCount: adjustedPositionCount,
+      pendingBuyCount,
+      totalPositionCount,
       originalPositionCount: currentPositionCount,
       availableSlots,
       topK,
@@ -595,6 +653,9 @@ export class StrategyService {
       nav,
       allSignals: signals.map(s => ({ symbol: s.symbol, score: s.indicators.score, rsi: s.indicators.rsi })),
       currentPositions: currentPositions.map(p => p.symbol),
+      pendingBuySymbols: Array.from(pendingBuySymbols),
+      openOrdersFetchFailed,
+      warning: openOrdersFetchFailed ? 'Open orders fetch failed - position counting may be inaccurate' : undefined,
     });
 
     // Update cooldown map: decrement cycles for all symbols
@@ -615,24 +676,7 @@ export class StrategyService {
     const profitFeeBufferPct = await this.settingsService.getSettingNumber('PROFIT_FEE_BUFFER_PCT');
     const volatilityAdjustmentFactor = await this.settingsService.getSettingNumber('VOLATILITY_ADJUSTMENT_FACTOR');
 
-    // Check for existing open orders to avoid duplicates
-    let pendingSellSymbols = new Set<string>();
-    let pendingBuySymbols = new Set<string>();
-    try {
-      const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
-        orderBelongsToBot(order, userrefPrefix),
-      );
-      pendingSellSymbols = new Set(
-        openOrders.filter(o => o.side === 'sell').map(o => o.symbol)
-      );
-      pendingBuySymbols = new Set(
-        openOrders.filter(o => o.side === 'buy').map(o => o.symbol)
-      );
-    } catch (ordersError: any) {
-      this.logger.debug(`Could not check open orders, proceeding with profit/loss check`, {
-        error: ordersError.message,
-      });
-    }
+    // Note: pendingBuySymbols and pendingSellSymbols are already fetched above for position counting
 
     // Check for profit/loss threshold exits FIRST (before other exit logic)
     // This ensures we lock in profits or cut losses as soon as thresholds are hit
@@ -1055,15 +1099,43 @@ export class StrategyService {
           continue; // Skip exit for profitable positions
         }
         
+        // Check if position is bearish (EMA12 <= EMA26) - bearish positions should be exited immediately
+        let isBearish = false;
+        try {
+          const positionSignal = signals.find(s => s.symbol === pos.symbol);
+          if (positionSignal) {
+            const ema12 = positionSignal.indicators.ema12;
+            const ema26 = positionSignal.indicators.ema26;
+            isBearish = ema12 <= ema26;
+          }
+        } catch (error: any) {
+          // If we can't check, assume not bearish
+        }
+        
+        // Check if this position was created by reconciliation (no corresponding trade)
+        // Positions created by reconciliation shouldn't have the same hold-time protection
+        // For now, we'll use a heuristic: if position is very new (< 1 hour) and not in signals, it's likely reconciliation-created
+        // This is a reasonable assumption since reconciliation creates positions from exchange balances
+        const isReconciliationPosition = positionAgeHours < 1 && !isInSignals;
+        
         // If position is too new, skip exit (let momentum develop)
-        // BUT: If position is not in signals at all, use a shorter minimum hold time (4 cycles instead of 8)
-        // This allows faster rotation out of positions that don't meet entry criteria, but still gives them time to develop
-        const effectiveMinHoldCycles = !isInSignals ? 4 : minHoldCycles; // 4 cycles (8-12 hours) if not in signals, 8 cycles otherwise
+        // BUT: 
+        // 1. If position is not in signals at all, use a shorter minimum hold time (4 cycles instead of 8)
+        // 2. If position is bearish (EMA12 <= EMA26), allow immediate exit (0 cycles) - cut losses quickly
+        // 3. If position was created by reconciliation, allow immediate exit (0 cycles) - wasn't created by our strategy
+        let effectiveMinHoldCycles = !isInSignals ? 4 : minHoldCycles; // 4 cycles (8-12 hours) if not in signals, 8 cycles otherwise
+        if (isBearish) {
+          effectiveMinHoldCycles = 0; // Bearish positions can be exited immediately
+        } else if (isReconciliationPosition) {
+          effectiveMinHoldCycles = 0; // Reconciliation positions can be exited immediately
+        }
         const effectiveMinHoldHours = cadenceHours * effectiveMinHoldCycles;
         
         this.logger.log(`[TARGET EXIT CHECK] Evaluating exit for position not in target`, {
           symbol: pos.symbol,
           isInSignals,
+          isBearish,
+          isReconciliationPosition,
           positionAgeHours: positionAgeHours.toFixed(2),
           effectiveMinHoldHours: effectiveMinHoldHours.toFixed(2),
           currentProfitPct: currentProfitPct.toFixed(2),
@@ -1072,13 +1144,15 @@ export class StrategyService {
         
         if (positionAgeHours < effectiveMinHoldHours) {
           const hoursRemaining = effectiveMinHoldHours - positionAgeHours;
-          this.logger.log(`[TARGET EXIT SKIPPED] Position too new - ${pos.symbol}: held ${positionAgeHours.toFixed(1)}h, need ${effectiveMinHoldHours.toFixed(1)}h (${effectiveMinHoldCycles} cycles), ${hoursRemaining.toFixed(1)}h remaining`, {
+          this.logger.log(`[TARGET EXIT SKIPPED] Position too new - ${pos.symbol}: held ${positionAgeHours.toFixed(1)}h, need ${effectiveMinHoldHours.toFixed(1)}h (${effectiveMinHoldCycles} cycles), ${hoursRemaining.toFixed(1)}h remaining${isReconciliationPosition ? ' (reconciliation position)' : ''}${isBearish ? ' (bearish)' : ''}`, {
             symbol: pos.symbol,
             positionAgeHours: positionAgeHours.toFixed(2),
             minHoldHours: effectiveMinHoldHours.toFixed(2),
             hoursRemaining: hoursRemaining.toFixed(2),
             effectiveMinHoldCycles,
             isInSignals,
+            isBearish,
+            isReconciliationPosition,
             cadenceHours,
             reason: `Minimum hold time not met (need ${effectiveMinHoldCycles} cycles = ${effectiveMinHoldHours.toFixed(1)}h, currently held ${positionAgeHours.toFixed(1)}h)`,
           });
@@ -1285,8 +1359,10 @@ export class StrategyService {
       if (!currentHoldings.has(symbol)) {
         // Check if there's already a pending buy order for this symbol on the exchange
         if (pendingBuySymbols.has(symbol)) {
-          this.logger.debug(`Skipping symbol - buy order already pending on exchange`, {
+          this.logger.log(`Skipping ${symbol} - buy order already pending on exchange`, {
             symbol,
+            pendingBuySymbols: Array.from(pendingBuySymbols),
+            reason: 'Duplicate prevention - order already exists',
           });
           continue;
         }
@@ -1814,16 +1890,22 @@ export class StrategyService {
       
       // Check if position is in signals and get its ranking
       const signal = signals.find(s => s.symbol === position.symbol);
-      if (!signal) {
-        // Position not in signals - handled by "not in target" exit logic
-        continue;
+      
+      // If position is not in signals, it was filtered out - still consider for scaling out
+      // If position is in signals, check if it's in top 5
+      let isInTop5 = false;
+      let positionRank = 999; // High rank if not in signals
+      
+      if (signal) {
+        // Position is in filtered signals - get its ranking
+        positionRank = signals.findIndex(s => s.symbol === position.symbol) + 1;
+        isInTop5 = positionRank <= 5;
+      } else {
+        // Position was filtered out - not in top 5 by definition
+        isInTop5 = false;
       }
       
-      // Get position ranking
-      const positionRank = signals.findIndex(s => s.symbol === position.symbol) + 1;
-      const isInTop5 = positionRank <= 5;
-      
-      // Only consider scaling out if position is NOT in top 5 (signal has weakened)
+      // Only consider scaling out if position is NOT in top 5 (signal has weakened or filtered out)
       if (isInTop5) {
         continue;
       }

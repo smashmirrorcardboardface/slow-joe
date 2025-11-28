@@ -55,7 +55,23 @@ export class ReconcileProcessor extends WorkerHost {
       
       // Get balances from exchange
       const baseCurrency = 'USD';
-      const balance = await this.exchangeService.getBalance(baseCurrency);
+      let balance: { free: number | string; locked: number | string };
+      try {
+        balance = await this.exchangeService.getBalance(baseCurrency);
+      } catch (balanceError: any) {
+        this.logger.error('Failed to fetch USD balance for NAV calculation', balanceError.stack, {
+          jobId: job.id,
+          error: balanceError.message,
+          warning: 'NAV calculation will be inaccurate - using last known NAV',
+        });
+        // Use last known NAV instead of calculating from potentially incorrect data
+        const lastNav = await this.metricsService.getNAV();
+        this.logger.warn('Using last known NAV due to balance fetch failure', {
+          jobId: job.id,
+          lastNav,
+        });
+        return; // Exit early - don't update NAV with potentially incorrect data
+      }
       
       // Calculate NAV from positions
       const positions = await this.positionsService.findOpenByBot(botId);
@@ -260,7 +276,26 @@ export class ReconcileProcessor extends WorkerHost {
     try {
       const botId = this.getBotIdValue();
       // Get all balances from exchange
-      const allBalances = await this.exchangeService.getAllBalances();
+      let allBalances: Record<string, number>;
+      try {
+        allBalances = await this.exchangeService.getAllBalances();
+        
+        // Validate that we got balances - if empty or null, don't proceed with position closing
+        if (!allBalances || Object.keys(allBalances).length === 0) {
+          this.logger.error('getAllBalances returned empty result - skipping position sync to prevent incorrect closures', '', {
+            jobId,
+            warning: 'This could cause NAV calculation issues, but closing positions without balance data would be worse',
+          });
+          return; // Exit early - don't close any positions if we can't get balances
+        }
+      } catch (balanceError: any) {
+        this.logger.error('Failed to fetch balances from exchange - skipping position sync to prevent incorrect closures', balanceError.stack, {
+          jobId,
+          error: balanceError.message,
+          warning: 'NAV calculation may be inaccurate, but closing positions without balance data would be worse',
+        });
+        return; // Exit early - don't close any positions if balance fetch fails
+      }
       
       // Get universe to know which symbols we trade
       const universeStr = await this.settingsService.getSetting('UNIVERSE');
@@ -368,23 +403,28 @@ export class ReconcileProcessor extends WorkerHost {
           }
         } else {
           // No position in database, but balance exists on exchange
-          // Check MAX_POSITIONS before creating position
+          // IMPORTANT: If the balance exists on the exchange, we should track it regardless of MAX_POSITIONS
+          // This ensures NAV is accurate and we don't lose track of positions that were:
+          // - Created by another bot on the same account
+          // - Created manually
+          // - Created before MAX_POSITIONS was reduced
+          // - Created during a reconciliation that happened while MAX_POSITIONS was higher
           const currentPositions = await this.positionsService.findOpenByBot(botId);
           const maxPositions = await this.settingsService.getSettingInt('MAX_POSITIONS');
           
           if (currentPositions.length >= maxPositions) {
-            this.logger.warn(`Cannot create position from reconciliation - MAX_POSITIONS (${maxPositions}) already reached`, {
+            // Still create the position even if MAX_POSITIONS is reached
+            // The position already exists on the exchange, so we need to track it for accurate NAV
+            this.logger.warn(`Creating position from reconciliation despite MAX_POSITIONS (${maxPositions}) being reached`, {
               jobId,
               symbol,
               quantity,
               currentPositions: currentPositions.length,
               maxPositions,
               existingPositions: currentPositions.map(p => p.symbol),
-              note: 'Balance exists on exchange but position limit reached - position will be created on next reconcile if slot becomes available',
+              note: 'Balance exists on exchange - creating position to ensure accurate NAV tracking. This position may have been created by another bot, manually, or before MAX_POSITIONS was reduced.',
             });
-            // Don't create the position - this could be from another bot or manual trade
-            // If it's from this bot, it will be created when a slot opens
-            continue;
+            // Continue to create the position - we need to track it for accurate NAV
           }
           
           // Mark this symbol as one we're creating to avoid closing it

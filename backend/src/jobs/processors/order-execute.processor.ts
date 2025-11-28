@@ -131,10 +131,40 @@ export class OrderExecuteProcessor extends WorkerHost {
         // Extract base currency from symbol (e.g., "ADA-USD" -> "ADA")
         const baseCurrency = symbol.split('-')[0];
         
+        // Check for pending sell orders for this symbol that might have locked the balance
+        try {
+          const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+            orderBelongsToBot(order, userrefPrefix),
+          );
+          const pendingSellOrders = openOrders.filter(
+            o => o.side === 'sell' && o.symbol === symbol
+          );
+          
+          if (pendingSellOrders.length > 0) {
+            this.logger.warn(`Sell order already pending for ${symbol} - skipping duplicate`, {
+              jobId: job.id,
+              symbol,
+              pendingOrders: pendingSellOrders.map(o => ({
+                orderId: o.orderId,
+                quantity: o.quantity,
+                remainingQuantity: o.remainingQuantity,
+              })),
+            });
+            return; // Exit - order already pending
+          }
+        } catch (orderCheckError: any) {
+          this.logger.warn(`Could not check for pending orders, proceeding with balance check`, {
+            jobId: job.id,
+            symbol,
+            error: orderCheckError.message,
+          });
+        }
+        
         try {
           const assetBalance = await this.exchangeService.getBalance(baseCurrency);
           // For sell orders, only free balance matters (locked assets are in pending orders)
           const freeBalance = parseFloat(assetBalance.free.toString());
+          const lockedBalance = parseFloat(assetBalance.locked.toString());
           
           // Use rounded quantity for balance check (this is what will actually be ordered)
           // Allow exact match or small rounding tolerance (0.01% or minimum 0.0001)
@@ -367,6 +397,39 @@ export class OrderExecuteProcessor extends WorkerHost {
           
           // Position still exists but we got insufficient funds error
           // This could be a real issue (e.g., balance locked in another order)
+          // Check if there are pending orders that might have locked the balance
+          try {
+            const openOrders = (await this.exchangeService.getOpenOrders()).filter(order =>
+              orderBelongsToBot(order, userrefPrefix),
+            );
+            const pendingSellOrders = openOrders.filter(
+              o => o.side === 'sell' && o.symbol === symbol
+            );
+            
+            if (pendingSellOrders.length > 0) {
+              this.logger.warn(`Sell order failed - balance likely locked in pending order(s)`, {
+                jobId: job.id,
+                symbol,
+                error: orderError.message,
+                positionQuantity: postErrorPositionCheck[0].quantity,
+                pendingOrders: pendingSellOrders.map(o => ({
+                  orderId: o.orderId,
+                  quantity: o.quantity,
+                  remainingQuantity: o.remainingQuantity,
+                })),
+                note: 'Balance is locked in pending order - will retry when order fills or is cancelled',
+              });
+              return; // Exit gracefully - order already pending
+            }
+          } catch (pendingCheckError: any) {
+            // If we can't check pending orders, log the error but still throw the original error
+            this.logger.warn(`Could not check for pending orders after insufficient funds error`, {
+              jobId: job.id,
+              symbol,
+              error: pendingCheckError.message,
+            });
+          }
+          
           this.logger.error(`Sell order failed with 'Insufficient funds' but position still exists`, orderError.stack || orderError.message, {
             jobId: job.id,
             symbol,
@@ -416,14 +479,45 @@ export class OrderExecuteProcessor extends WorkerHost {
         const fee = orderStatus.fee || 0;
         
         // Record trade with fee
-        await this.tradesService.create({
-          symbol,
-          side,
-          quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
-          price: orderStatus.filledPrice?.toString() || limitPrice.toString(),
-          fee: fee.toString(),
-          exchangeOrderId: orderResult.orderId,
-        });
+        // IMPORTANT: This must succeed - if it fails, the order is already filled on exchange
+        // but won't be tracked in our database, causing NAV discrepancies
+        try {
+          await this.tradesService.create({
+            symbol,
+            side,
+            quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+            price: orderStatus.filledPrice?.toString() || limitPrice.toString(),
+            fee: fee.toString(),
+            exchangeOrderId: orderResult.orderId,
+          });
+          this.logger.log(`Trade recorded successfully`, {
+            jobId: job.id,
+            symbol,
+            side,
+            orderId: orderResult.orderId,
+            quantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+          });
+        } catch (tradeError: any) {
+          // CRITICAL: Order is already filled on exchange, but trade recording failed
+          // Log this as an error and alert - this causes NAV discrepancies
+          this.logger.error(`CRITICAL: Order filled but trade recording failed - NAV will be inaccurate`, tradeError.stack, {
+            jobId: job.id,
+            symbol,
+            side,
+            orderId: orderResult.orderId,
+            filledQuantity: orderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+            filledPrice: orderStatus.filledPrice?.toString() || limitPrice.toString(),
+            error: tradeError.message,
+            warning: 'Order is executed on exchange but not recorded in database - reconciliation will create position but trade history will be missing',
+          });
+          // Try to alert about this critical issue
+          await this.alertsService.alertOrderFailure(
+            symbol,
+            `Order filled but trade recording failed: ${tradeError.message}. Order ID: ${orderResult.orderId}`,
+          );
+          // Re-throw to ensure the error is visible
+          throw tradeError;
+        }
 
         // Update position
         if (side === 'buy') {
@@ -568,14 +662,35 @@ export class OrderExecuteProcessor extends WorkerHost {
           if (finalStatus.status === 'filled') {
             // Order was filled, process it
             const fee = finalStatus.fee || 0;
-            await this.tradesService.create({
-              symbol,
-              side,
-              quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
-              price: finalStatus.filledPrice?.toString() || limitPrice.toString(),
-              fee: fee.toString(),
-              exchangeOrderId: orderResult.orderId,
-            });
+            try {
+              await this.tradesService.create({
+                symbol,
+                side,
+                quantity: finalStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+                price: finalStatus.filledPrice?.toString() || limitPrice.toString(),
+                fee: fee.toString(),
+                exchangeOrderId: orderResult.orderId,
+              });
+              this.logger.log(`Trade recorded successfully (after cancellation check)`, {
+                jobId: job.id,
+                symbol,
+                side,
+                orderId: orderResult.orderId,
+              });
+            } catch (tradeError: any) {
+              this.logger.error(`CRITICAL: Order filled but trade recording failed - NAV will be inaccurate`, tradeError.stack, {
+                jobId: job.id,
+                symbol,
+                side,
+                orderId: orderResult.orderId,
+                error: tradeError.message,
+              });
+              await this.alertsService.alertOrderFailure(
+                symbol,
+                `Order filled but trade recording failed: ${tradeError.message}. Order ID: ${orderResult.orderId}`,
+              );
+              throw tradeError;
+            }
             if (side === 'buy') {
               // Check if we already have a position for this symbol (averaging up scenario)
               const existingPositions = await this.positionsService.findBySymbolForBot(symbol, botId);
@@ -748,14 +863,35 @@ export class OrderExecuteProcessor extends WorkerHost {
           const fee = marketOrderStatus.fee || 0;
           
           // Record trade with fee
-          await this.tradesService.create({
-            symbol,
-            side,
-            quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
-            price: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
-            fee: fee.toString(),
-            exchangeOrderId: marketOrderResult.orderId,
-          });
+          try {
+            await this.tradesService.create({
+              symbol,
+              side,
+              quantity: marketOrderStatus.filledQuantity?.toString() || roundedQuantity.toString(),
+              price: marketOrderStatus.filledPrice?.toString() || expectedPrice.toString(),
+              fee: fee.toString(),
+              exchangeOrderId: marketOrderResult.orderId,
+            });
+            this.logger.log(`Trade recorded successfully (market order)`, {
+              jobId: job.id,
+              symbol,
+              side,
+              orderId: marketOrderResult.orderId,
+            });
+          } catch (tradeError: any) {
+            this.logger.error(`CRITICAL: Market order filled but trade recording failed - NAV will be inaccurate`, tradeError.stack, {
+              jobId: job.id,
+              symbol,
+              side,
+              orderId: marketOrderResult.orderId,
+              error: tradeError.message,
+            });
+            await this.alertsService.alertOrderFailure(
+              symbol,
+              `Market order filled but trade recording failed: ${tradeError.message}. Order ID: ${marketOrderResult.orderId}`,
+            );
+            throw tradeError;
+          }
 
           // Update position
           if (side === 'buy') {

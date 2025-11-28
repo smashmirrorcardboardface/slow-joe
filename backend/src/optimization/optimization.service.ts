@@ -241,6 +241,13 @@ export class OptimizationService {
 
   /**
    * Generate optimization recommendations based on metrics
+   * 
+   * Note: The strategy now includes several advanced features:
+   * - Scaling Out: Positions are trimmed (30%) when profitable (≥2%) or losing (≤-1%) and not in top 5 signals
+   * - Averaging Up: Additional buys are made when MAX_POSITIONS is reached but position is still in top 5 signals
+   * - Pending Buy Order Counting: Pending buy orders are counted as positions for MAX_POSITIONS enforcement
+   * 
+   * These features are considered in the optimization recommendations below.
    */
   private async generateRecommendations(
     metrics: TradingMetrics,
@@ -364,6 +371,69 @@ export class OptimizationService {
           expectedImprovement: 'Fewer positions = fewer trades = lower fees',
           reason: `Fees ($${metrics.totalFees.toFixed(2)}) are ${((metrics.totalFees / Math.max(metrics.totalProfit, 0.01)) * 100).toFixed(1)}% of profits`,
         });
+      }
+    }
+
+    // 7. Consider scaling out effectiveness (new feature: positions are trimmed at 2% profit or -1% loss)
+    // If average profit is close to 2% and win rate is good, positions might be trimmed too early
+    // If average profit is well above 2%, scaling out is working well
+    if (metrics.winRate > 50 && metrics.avgProfitPerTrade > 0 && metrics.avgProfitPerTrade < 0.10) {
+      // Profits are positive but small - might be trimming too early
+      // Note: Scaling out trims at 2% profit, so if avg profit is < $0.10 on small positions, might be too aggressive
+      const currentMinProfit = currentSettings.minProfitPct;
+      if (currentMinProfit <= 2.5) {
+        // If MIN_PROFIT_PCT is low, suggest increasing it to let positions run longer before full exit
+        const suggestedMinProfit = Math.min(currentMinProfit + 0.5, 4); // Cap at 4%
+        if (suggestedMinProfit > currentMinProfit) {
+          recommendations.push({
+            parameter: 'MIN_PROFIT_PCT',
+            oldValue: currentMinProfit.toString(),
+            newValue: suggestedMinProfit.toString(),
+            expectedImprovement: 'Higher exit threshold lets positions run longer, potentially increasing profits before scaling out',
+            reason: `Win rate is good (${metrics.winRate.toFixed(1)}%) but avg profit is small ($${metrics.avgProfitPerTrade.toFixed(4)}) - positions may be exiting too early`,
+          });
+        }
+      }
+    }
+
+    // 8. Consider averaging up effectiveness
+    // If win rate is good but profits are small, averaging up might help (already implemented)
+    // If win rate is low and we're averaging up into losing positions, that's bad
+    // This is more of an observation - averaging up is automatic when signals are strong
+    if (metrics.winRate < 40 && metrics.avgProfitPerTrade < 0) {
+      // Losing money and low win rate - averaging up might be making it worse
+      // Suggest being more conservative with MAX_POSITIONS to avoid over-allocating
+      const currentMaxPositions = currentSettings.maxPositions;
+      if (currentMaxPositions > 1) {
+        recommendations.push({
+          parameter: 'MAX_POSITIONS',
+          oldValue: currentMaxPositions.toString(),
+          newValue: (currentMaxPositions - 1).toString(),
+          expectedImprovement: 'Fewer positions reduces risk when win rate is low - averaging up into weak signals is risky',
+          reason: `Win rate is low (${metrics.winRate.toFixed(1)}%) and losing money - reduce position count to avoid averaging up into losses`,
+        });
+      }
+    }
+
+    // 9. Consider hold time vs profit relationship
+    // If positions are held for a long time but profits are small, might need better exit timing
+    // Scaling out should help with this, but if avg hold time is very long and profits are small, exits might be too conservative
+    if (metrics.avgHoldTimeHours > 24 && metrics.avgProfitPerTrade < 0.05 && metrics.winRate > 45) {
+      // Holding positions for > 24 hours but profits are small - might need to exit earlier or scale out more aggressively
+      // Note: Scaling out happens at 2% profit, so if we're holding > 24h and only making $0.05, something is off
+      const currentMinProfit = currentSettings.minProfitPct;
+      if (currentMinProfit > 3) {
+        // If exit threshold is high, might be waiting too long - scaling out should help but might need lower threshold
+        const suggestedMinProfit = Math.max(currentMinProfit - 0.5, 2.5); // Don't go below 2.5% (scaling out threshold)
+        if (suggestedMinProfit < currentMinProfit) {
+          recommendations.push({
+            parameter: 'MIN_PROFIT_PCT',
+            oldValue: currentMinProfit.toString(),
+            newValue: suggestedMinProfit.toString(),
+            expectedImprovement: 'Lower exit threshold allows earlier full exits - scaling out at 2% should lock in profits earlier',
+            reason: `Holding positions for ${metrics.avgHoldTimeHours.toFixed(1)}h but avg profit is only $${metrics.avgProfitPerTrade.toFixed(4)} - may need earlier exits`,
+          });
+        }
       }
     }
 

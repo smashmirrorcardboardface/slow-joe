@@ -1271,13 +1271,22 @@ function Dashboard() {
                           const openedAt = new Date(pos.openedAt).getTime();
                           // Filter history to show only data since position was opened, and limit to last 24 hours
                           const positionHistory = posHistory
-                            .filter((d: any) => d.time >= openedAt)
+                            .filter((d: any) => {
+                              if (!d || !d.time) return false;
+                              const dTime = typeof d.time === 'number' ? d.time : new Date(d.time).getTime();
+                              return dTime >= openedAt && (d.close || d.price);
+                            })
                             .slice(-24) // Last 24 data points
-                            .map((d: any) => ({
-                              time: new Date(d.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-                              price: d.close || d.price,
-                              entryPrice: entryPrice,
-                            }));
+                            .map((d: any) => {
+                              const price = d.close || d.price;
+                              const dTime = typeof d.time === 'number' ? d.time : new Date(d.time).getTime();
+                              return {
+                                time: new Date(dTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                                price: parseFloat(price) || entryPrice,
+                                entryPrice: entryPrice,
+                              };
+                            })
+                            .filter((d: any) => d.price > 0); // Ensure valid prices
                           
                           return (
                             <div key={pos.id} className="px-3 py-2.5 bg-muted/50 rounded-md">
@@ -1304,7 +1313,7 @@ function Dashboard() {
                               </div>
                               
                               {/* Mini Chart */}
-                              {positionHistory.length > 0 && (
+                              {positionHistory && positionHistory.length > 0 ? (
                                 <div className="mt-3">
                                   {/* Price labels */}
                                   <div className="flex justify-between items-center mb-1 text-xs text-muted-foreground">
@@ -1317,8 +1326,8 @@ function Dashboard() {
                                     </div>
                                   </div>
                                   
-                                  <div className="h-16">
-                                    <ResponsiveContainer width="100%" height="100%">
+                                  <div className="h-16 w-full" style={{ minHeight: '64px' }}>
+                                    <ResponsiveContainer width="100%" height={64}>
                                       <AreaChart data={positionHistory} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
                                         <defs>
                                           <linearGradient id={`gradient-${pos.symbol}`} x1="0" y1="0" x2="0" y2="1">
@@ -1384,6 +1393,10 @@ function Dashboard() {
                                     </ResponsiveContainer>
                                   </div>
                                 </div>
+                              ) : (
+                                <div className="mt-3 text-xs text-muted-foreground italic">
+                                  Chart data loading...
+                                </div>
                               )}
                             </div>
                           );
@@ -1392,36 +1405,9 @@ function Dashboard() {
                     </div>
                   )}
 
-                  {/* Recent Trades */}
-                  {metrics?.recentTradesList?.length > 0 && (
-                    <div className={metrics?.openPositions?.length > 0 ? "pt-4 border-t border-border" : ""}>
-                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recent Trades</h4>
-                      <div className="flex flex-col gap-2">
-                        {metrics.recentTradesList.slice(0, 5).map((trade: any) => (
-                          <div key={trade.id} className="px-3 py-2 bg-muted/50 rounded-md flex justify-between items-center">
-                            <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-semibold">{trade.symbol}</span>
-                                <Badge variant={trade.side === 'buy' ? 'success' : 'secondary'} className="text-xs">
-                                  {trade.side.toUpperCase()}
-                                </Badge>
-                              </div>
-                              <div className="text-sm text-muted-foreground">
-                                {parseFloat(trade.quantity).toFixed(8)} @ ${parseFloat(trade.price).toFixed(2)}
-                              </div>
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {formatDateTime(trade.createdAt, metrics?.recentTradesList)}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {/* Open Orders */}
                   {openOrders.length > 0 && (
-                    <div className={(metrics?.openPositions?.length > 0 || metrics?.recentTradesList?.length > 0) ? "pt-4 border-t border-border" : ""}>
+                    <div className={metrics?.openPositions?.length > 0 ? "pt-4 border-t border-border" : ""}>
                       <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Open Orders</h4>
                       <div className="text-xs text-muted-foreground mb-3 p-2 bg-blue-500/10 border border-blue-500/20 rounded">
                         ⏳ Limit orders placed 0.1% below market to get maker fees. They'll fill when price drops or convert to market orders after 15 minutes.
@@ -1554,6 +1540,33 @@ function Dashboard() {
                             </div>
                           );
                         })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recent Trades */}
+                  {metrics?.recentTradesList?.length > 0 && (
+                    <div className={(metrics?.openPositions?.length > 0 || openOrders.length > 0) ? "pt-4 border-t border-border" : ""}>
+                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recent Trades</h4>
+                      <div className="flex flex-col gap-2">
+                        {metrics.recentTradesList.slice(0, 5).map((trade: any) => (
+                          <div key={trade.id} className="px-3 py-2 bg-muted/50 rounded-md flex justify-between items-center">
+                            <div>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-semibold">{trade.symbol}</span>
+                                <Badge variant={trade.side === 'buy' ? 'success' : 'secondary'} className="text-xs">
+                                  {trade.side.toUpperCase()}
+                                </Badge>
+                              </div>
+                              <div className="text-sm text-muted-foreground">
+                                {parseFloat(trade.quantity).toFixed(8)} @ ${parseFloat(trade.price).toFixed(2)}
+                              </div>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatDateTime(trade.createdAt, metrics?.recentTradesList)}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
