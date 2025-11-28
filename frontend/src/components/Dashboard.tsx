@@ -1266,15 +1266,16 @@ function Dashboard() {
                           const pnl = currentValue - entryValue;
                           const pnlPercent = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
                           
-                          // Get price history for this position (since it was opened)
+                          // Get price history for this position (include a buffer before openedAt so we always have at least one candle)
                           const posHistory = positionPriceHistory[pos.symbol] || [];
                           const openedAt = new Date(pos.openedAt).getTime();
-                          // Filter history to show only data since position was opened, and limit to last 24 hours
+                          const historyBufferMs = 2 * 60 * 60 * 1000; // 2 hours buffer before the position opened
+                          // Filter history to show data since the position was opened (with buffer), and limit to recent points
                           const positionHistory = posHistory
                             .filter((d: any) => {
                               if (!d || !d.time) return false;
                               const dTime = typeof d.time === 'number' ? d.time : new Date(d.time).getTime();
-                              return dTime >= openedAt && (d.close || d.price);
+                              return dTime >= (openedAt - historyBufferMs) && (d.close || d.price);
                             })
                             .slice(-24) // Last 24 data points
                             .map((d: any) => {

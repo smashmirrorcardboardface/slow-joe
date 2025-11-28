@@ -288,9 +288,28 @@ export class OrderExecuteProcessor extends WorkerHost {
       const ticker = await this.exchangeService.getTicker(symbol);
       // For BUY: place limit order slightly below ask to get maker fee
       // For SELL: place limit order slightly above bid to get maker fee
+      // However, if the offset is too large, the order may never fill in a trending market
+      // So we cap the offset at 0.5% to ensure reasonable fill probability
+      const maxOffsetPct = 0.005; // 0.5% maximum offset
+      const effectiveOffsetPct = Math.min(makerOffsetPct, maxOffsetPct);
+      
       const limitPrice = side === 'buy' 
-        ? ticker.ask * (1 - makerOffsetPct)
-        : ticker.bid * (1 + makerOffsetPct);
+        ? ticker.ask * (1 - effectiveOffsetPct)
+        : ticker.bid * (1 + effectiveOffsetPct);
+      
+      // Log if we're using a capped offset
+      if (effectiveOffsetPct < makerOffsetPct) {
+        this.logger.debug(`Using capped offset for ${side} order (${(effectiveOffsetPct * 100).toFixed(3)}% instead of ${(makerOffsetPct * 100).toFixed(3)}%) to improve fill probability`, {
+          jobId: job.id,
+          symbol,
+          side,
+          originalOffset: (makerOffsetPct * 100).toFixed(3),
+          cappedOffset: (effectiveOffsetPct * 100).toFixed(3),
+          ask: ticker.ask,
+          bid: ticker.bid,
+          limitPrice,
+        });
+      }
 
       // For buy orders, verify we have enough cash right before placing the order
       // This prevents race conditions where multiple buy orders are generated in the same
@@ -458,6 +477,9 @@ export class OrderExecuteProcessor extends WorkerHost {
       const timeoutMs = fillTimeoutMinutes * 60 * 1000;
       let orderStatus = await this.exchangeService.getOrderStatus(orderResult.orderId);
       let filled = orderStatus.status === 'filled';
+      let lastPriceCheck = Date.now();
+      let lastAskPrice = ticker.ask;
+      let lastBidPrice = ticker.bid;
 
       while (!filled && (Date.now() - startTime) < timeoutMs) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalSeconds * 1000));
@@ -471,6 +493,67 @@ export class OrderExecuteProcessor extends WorkerHost {
             orderId: orderResult.orderId,
           });
           break;
+        }
+        
+        // Check if price is moving away from our limit price (every 2 minutes)
+        // If price is moving away significantly, convert to market order sooner
+        if (Date.now() - lastPriceCheck > 2 * 60 * 1000) { // Check every 2 minutes
+          try {
+            const currentTicker = await this.exchangeService.getTicker(symbol);
+            const currentAsk = currentTicker.ask;
+            const currentBid = currentTicker.bid;
+            
+            if (side === 'buy') {
+              // For buy orders, if ask price is moving up and away from our limit, convert sooner
+              const priceGap = (currentAsk - limitPrice) / limitPrice;
+              const priceMovedAway = currentAsk > lastAskPrice * 1.002; // Price moved up >0.2% since last check
+              
+              if (priceGap > 0.01 && priceMovedAway) { // Gap >1% and price moving up
+                this.logger.warn(`Price moving away from limit order - converting to market order early`, {
+                  jobId: job.id,
+                  symbol,
+                  side,
+                  limitPrice: limitPrice.toFixed(4),
+                  currentAsk: currentAsk.toFixed(4),
+                  lastAskPrice: lastAskPrice.toFixed(4),
+                  priceGap: (priceGap * 100).toFixed(2),
+                  timeElapsed: ((Date.now() - startTime) / 1000 / 60).toFixed(1),
+                });
+                // Break out of loop to convert to market order
+                break;
+              }
+              lastAskPrice = currentAsk;
+            } else {
+              // For sell orders, if bid price is moving down and away from our limit, convert sooner
+              const priceGap = (limitPrice - currentBid) / limitPrice;
+              const priceMovedAway = currentBid < lastBidPrice * 0.998; // Price moved down >0.2% since last check
+              
+              if (priceGap > 0.01 && priceMovedAway) { // Gap >1% and price moving down
+                this.logger.warn(`Price moving away from limit order - converting to market order early`, {
+                  jobId: job.id,
+                  symbol,
+                  side,
+                  limitPrice: limitPrice.toFixed(4),
+                  currentBid: currentBid.toFixed(4),
+                  lastBidPrice: lastBidPrice.toFixed(4),
+                  priceGap: (priceGap * 100).toFixed(2),
+                  timeElapsed: ((Date.now() - startTime) / 1000 / 60).toFixed(1),
+                });
+                // Break out of loop to convert to market order
+                break;
+              }
+              lastBidPrice = currentBid;
+            }
+            
+            lastPriceCheck = Date.now();
+          } catch (priceCheckError: any) {
+            // If price check fails, continue polling normally
+            this.logger.debug(`Could not check price movement, continuing to poll`, {
+              jobId: job.id,
+              symbol,
+              error: priceCheckError.message,
+            });
+          }
         }
       }
 

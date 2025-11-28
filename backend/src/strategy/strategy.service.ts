@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { EMA, RSI } from 'technicalindicators';
+import { EMA, RSI, ATR } from 'technicalindicators';
 import { ExchangeService, OHLCV } from '../exchange/exchange.service';
 import { SignalsService } from '../signals/signals.service';
 import { AssetsService } from '../assets/assets.service';
@@ -77,41 +77,194 @@ export class StrategyService {
     const ema26 = ema26Values[ema26Values.length - 1];
     const rsi = rsiValues[rsiValues.length - 1] ?? 50;
 
-    // Score formula based on actual performance analysis:
-    // - Wins have RSI 55-65 (avg 56.22), losses have RSI 45-65 (avg 54.81)
-    // - Wins have EMA ratio ~1.0013, losses have EMA ratio ~1.0045
-    // - Key insight: Moderate EMA separation (1.001-1.002) with RSI 55-65 performs best
-    //   Very high EMA ratios (1.004+) may indicate overextension and reversals
+    // Score formula - REVISED based on actual trading performance analysis:
+    // Analysis of 20 recent trades shows:
+    // - High EMA ratios (0.3-0.5%) often perform well (AVAX-USD 0.462% = wins)
+    // - Lower RSI (50-57) sometimes outperforms higher RSI (60-65)
+    // - Very high scores (1.208) don't guarantee wins - need momentum component
+    // - Lower scores (0.945) can win big if trend is strong
     const emaRatio = ema12 / ema26;
+    const emaRatioPct = (emaRatio - 1) * 100; // Convert to percentage for easier reasoning
     
-    // EMA component: Reward moderate separation (1.001-1.002), penalize extremes
-    // Too low (<1.001) = weak trend, too high (>1.003) = overextended
+    // EMA component: Reward stronger trends (higher ratios), but not extreme overextension
+    // Based on data: 0.3-0.5% EMA ratio performs well, <0.1% is weak
     let emaScore = 1.0;
-    if (emaRatio >= 1.001 && emaRatio <= 1.002) {
-      emaScore = 1.05; // Best range (where wins cluster)
-    } else if (emaRatio > 1.002 && emaRatio <= 1.003) {
-      emaScore = 1.02; // Good range
-    } else if (emaRatio > 1.003) {
-      emaScore = 0.95; // Penalty for overextension (where losses are)
+    if (emaRatioPct >= 0.3 && emaRatioPct <= 0.5) {
+      emaScore = 1.10; // Strong trend, good performance range
+    } else if (emaRatioPct >= 0.2 && emaRatioPct < 0.3) {
+      emaScore = 1.05; // Good trend
+    } else if (emaRatioPct >= 0.1 && emaRatioPct < 0.2) {
+      emaScore = 1.00; // Moderate trend
+    } else if (emaRatioPct >= 0.05 && emaRatioPct < 0.1) {
+      emaScore = 0.95; // Weak trend
+    } else if (emaRatioPct > 0.5) {
+      emaScore = 1.05; // Very strong trend - still good, but watch for reversal
     } else {
-      emaScore = 0.90; // Penalty for weak trend
+      emaScore = 0.85; // Very weak or bearish
     }
     
-    // RSI component: Strongly prefer 55-65 range (where 9/11 wins occurred)
+    // RSI component: Prefer moderate RSI (50-60), penalize extremes
+    // Data shows: RSI 50-57 can perform well, 60-65 may be overbought
     let rsiScore = 1.0;
-    if (rsi >= 55 && rsi <= 65) {
-      rsiScore = 1.15; // Strong bonus for optimal range
-    } else if (rsi >= 50 && rsi < 55) {
-      rsiScore = 1.05; // Moderate bonus
+    if (rsi >= 50 && rsi <= 57) {
+      rsiScore = 1.10; // Sweet spot - not overbought, good momentum
     } else if (rsi >= 45 && rsi < 50) {
-      rsiScore = 0.90; // Penalty (where many losses are)
+      rsiScore = 1.05; // Slightly oversold, potential bounce
+    } else if (rsi >= 57 && rsi <= 62) {
+      rsiScore = 1.00; // Getting warm but still acceptable
+    } else if (rsi > 62 && rsi <= 70) {
+      rsiScore = 0.95; // Overbought territory - higher risk
+    } else if (rsi < 45) {
+      rsiScore = 0.90; // Oversold - weak momentum
     } else {
-      rsiScore = 0.85; // Further penalty
+      rsiScore = 0.85; // Extreme - avoid
     }
     
-    // Combined score: EMA quality * RSI quality
-    // This should correlate with wins (higher score = better performance)
-    const score = emaScore * rsiScore;
+    // Add momentum component: recent price change (last 3 candles)
+    // This helps identify accelerating trends vs. decelerating ones
+    let momentumScore = 1.0;
+    if (candles.length >= 3) {
+      const recent3 = candles.slice(-3);
+      const priceChange = (recent3[2].close - recent3[0].close) / recent3[0].close;
+      const momentumPct = priceChange * 100;
+      
+      // Reward positive momentum, but not extreme (which might reverse)
+      if (momentumPct > 0 && momentumPct <= 2) {
+        momentumScore = 1.05; // Healthy upward momentum
+      } else if (momentumPct > 2 && momentumPct <= 5) {
+        momentumScore = 1.02; // Strong momentum, but getting extended
+      } else if (momentumPct > 5) {
+        momentumScore = 0.98; // Very strong - might be overextended
+      } else if (momentumPct <= -2) {
+        momentumScore = 0.95; // Negative momentum - avoid
+      } else {
+        momentumScore = 1.0; // Neutral
+      }
+    }
+    
+    // Volume analysis: Increasing volume confirms trend strength
+    // Higher volume on up moves = stronger conviction
+    let volumeScore = 1.0;
+    if (candles.length >= 10) {
+      const recent10 = candles.slice(-10);
+      const recent5Vol = recent10.slice(-5).reduce((sum, c) => sum + c.volume, 0) / 5;
+      const previous5Vol = recent10.slice(-10, -5).reduce((sum, c) => sum + c.volume, 0) / 5;
+      
+      if (previous5Vol > 0) {
+        const volumeChange = (recent5Vol - previous5Vol) / previous5Vol;
+        
+        // Reward increasing volume (confirms trend)
+        if (volumeChange > 0.2) {
+          volumeScore = 1.08; // Strong volume increase - high conviction
+        } else if (volumeChange > 0.1) {
+          volumeScore = 1.04; // Moderate volume increase
+        } else if (volumeChange > -0.1) {
+          volumeScore = 1.0; // Stable volume
+        } else if (volumeChange > -0.2) {
+          volumeScore = 0.96; // Declining volume - weakening trend
+        } else {
+          volumeScore = 0.92; // Strong volume decline - trend weakening
+        }
+      }
+    }
+    
+    // Volatility analysis (ATR): Lower volatility = more predictable moves
+    // Calculate ATR over last 14 periods for volatility assessment
+    let volatilityScore = 1.0;
+    if (candles.length >= 14) {
+      try {
+        const atrInput = candles.slice(-14).map(c => ({
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }));
+        const atrValues = ATR.calculate({ period: 14, high: atrInput.map(c => c.high), low: atrInput.map(c => c.low), close: atrInput.map(c => c.close) });
+        const currentATR = atrValues[atrValues.length - 1];
+        const currentPrice = candles[candles.length - 1].close;
+        const atrPct = (currentATR / currentPrice) * 100; // ATR as % of price
+        
+        // Lower volatility is generally better for entry (more predictable)
+        // But very low volatility might indicate lack of movement
+        if (atrPct >= 0.5 && atrPct <= 2.0) {
+          volatilityScore = 1.05; // Sweet spot - moderate volatility
+        } else if (atrPct >= 2.0 && atrPct <= 4.0) {
+          volatilityScore = 1.0; // Higher volatility - still acceptable
+        } else if (atrPct >= 0.2 && atrPct < 0.5) {
+          volatilityScore = 0.98; // Low volatility - might be stagnant
+        } else if (atrPct > 4.0) {
+          volatilityScore = 0.95; // Very high volatility - risky
+        } else {
+          volatilityScore = 0.92; // Extreme volatility or very stagnant
+        }
+      } catch (error) {
+        // If ATR calculation fails, use neutral score
+        volatilityScore = 1.0;
+      }
+    }
+    
+    // Trend consistency: How many of the last candles are bullish?
+    // More consistent trends are more reliable
+    let trendConsistencyScore = 1.0;
+    if (candles.length >= 8) {
+      const recent8 = candles.slice(-8);
+      let bullishCandles = 0;
+      
+      for (let i = 1; i < recent8.length; i++) {
+        if (recent8[i].close > recent8[i - 1].close) {
+          bullishCandles++;
+        }
+      }
+      
+      const bullishRatio = bullishCandles / (recent8.length - 1);
+      
+      // Reward consistent upward trends
+      if (bullishRatio >= 0.75) {
+        trendConsistencyScore = 1.06; // Very consistent uptrend
+      } else if (bullishRatio >= 0.625) {
+        trendConsistencyScore = 1.03; // Good consistency
+      } else if (bullishRatio >= 0.5) {
+        trendConsistencyScore = 1.0; // Mixed - neutral
+      } else if (bullishRatio >= 0.375) {
+        trendConsistencyScore = 0.97; // Weak trend
+      } else {
+        trendConsistencyScore = 0.94; // Inconsistent or bearish
+      }
+    }
+    
+    // Price position in recent range: Are we near highs or lows?
+    // Entering near recent lows (but in uptrend) can be better than near highs
+    let pricePositionScore = 1.0;
+    if (candles.length >= 10) {
+      const recent10 = candles.slice(-10);
+      const highs = recent10.map(c => c.high);
+      const lows = recent10.map(c => c.low);
+      const maxHigh = Math.max(...highs);
+      const minLow = Math.min(...lows);
+      const currentPrice = candles[candles.length - 1].close;
+      const range = maxHigh - minLow;
+      
+      if (range > 0) {
+        const positionInRange = (currentPrice - minLow) / range; // 0 = at low, 1 = at high
+        
+        // Prefer entering in middle-to-lower part of range (but still in uptrend)
+        // This gives more room to run and less risk of immediate reversal
+        if (positionInRange >= 0.3 && positionInRange <= 0.6) {
+          pricePositionScore = 1.04; // Good position - room to grow
+        } else if (positionInRange >= 0.2 && positionInRange < 0.3) {
+          pricePositionScore = 1.02; // Lower in range - good entry point
+        } else if (positionInRange >= 0.6 && positionInRange <= 0.8) {
+          pricePositionScore = 1.0; // Higher in range - still OK
+        } else if (positionInRange > 0.8) {
+          pricePositionScore = 0.96; // Near highs - higher reversal risk
+        } else {
+          pricePositionScore = 0.98; // Very low - might be weak
+        }
+      }
+    }
+    
+    // Combined score: EMA * RSI * Momentum * Volume * Volatility * Trend Consistency * Price Position
+    // This multi-factor approach should better identify high-quality setups
+    const score = emaScore * rsiScore * momentumScore * volumeScore * volatilityScore * trendConsistencyScore * pricePositionScore;
 
     return { ema12, ema26, rsi, score };
   }
@@ -1030,10 +1183,14 @@ export class StrategyService {
       // Check if position is in signals
       const isInSignals = signalSymbols.has(pos.symbol);
       
-      // Skip if position is not due for evaluation AND it's in signals
-      // (If it's not in signals, we should evaluate it for exit even if not "due")
-      if (!duePositionSymbols.has(pos.symbol) && isInSignals) {
-        this.logger.debug(`Skipping target exit check - position not due for evaluation but is in signals`, {
+      // Check if position is in targetAssets (top K signals we want to hold)
+      const isInTargetAssets = targetAssets.includes(pos.symbol);
+      
+      // Skip if position is not due for evaluation AND it's in signals AND it's in targetAssets
+      // (If it's not in signals, or not in targetAssets, we should evaluate it for exit even if not "due")
+      // This allows us to exit positions that are in signals but ranked too low (not in top K)
+      if (!duePositionSymbols.has(pos.symbol) && isInSignals && isInTargetAssets) {
+        this.logger.debug(`Skipping target exit check - position not due for evaluation but is in signals and targetAssets`, {
           symbol: pos.symbol,
         });
         continue;
@@ -1046,9 +1203,26 @@ export class StrategyService {
           isDue: duePositionSymbols.has(pos.symbol),
           reason: 'Position filtered out of signals or does not meet entry criteria',
         });
+      } else if (!isInTargetAssets) {
+        // If position is in signals but not in targetAssets (ranked too low), log it
+        this.logger.log(`Position in signals but not in targetAssets (ranked too low) - evaluating for exit even if not due for evaluation`, {
+          symbol: pos.symbol,
+          isDue: duePositionSymbols.has(pos.symbol),
+          targetAssets,
+          reason: 'Position is in signals but not in top K target assets',
+        });
       }
       
       if (!targetAssets.includes(pos.symbol)) {
+        // Skip if there's already a pending sell order for this symbol
+        if (pendingSellSymbols.has(pos.symbol)) {
+          this.logger.debug(`Skipping exit check - sell order already pending for ${pos.symbol}`, {
+            symbol: pos.symbol,
+            reason: 'Duplicate prevention - sell order already exists',
+          });
+          continue;
+        }
+        
         this.logger.debug(`Position not in targetAssets - checking exit criteria`, {
           symbol: pos.symbol,
           isInSignals,
@@ -1123,19 +1297,27 @@ export class StrategyService {
         // 1. If position is not in signals at all, use a shorter minimum hold time (4 cycles instead of 8)
         // 2. If position is bearish (EMA12 <= EMA26), allow immediate exit (0 cycles) - cut losses quickly
         // 3. If position was created by reconciliation, allow immediate exit (0 cycles) - wasn't created by our strategy
+        // 4. If position is losing money and not in targetAssets, allow immediate exit (0 cycles) - cut losses on underperforming positions
         let effectiveMinHoldCycles = !isInSignals ? 4 : minHoldCycles; // 4 cycles (8-12 hours) if not in signals, 8 cycles otherwise
         if (isBearish) {
           effectiveMinHoldCycles = 0; // Bearish positions can be exited immediately
         } else if (isReconciliationPosition) {
           effectiveMinHoldCycles = 0; // Reconciliation positions can be exited immediately
+        } else if (!isProfitable && currentProfitPct < 0 && !isInTargetAssets) {
+          // If position is losing money and not in targetAssets (ranked too low), allow immediate exit
+          // This allows us to cut losses early on positions that aren't performing well
+          effectiveMinHoldCycles = 0;
         }
         const effectiveMinHoldHours = cadenceHours * effectiveMinHoldCycles;
         
+        const isLosingAndNotInTarget = !isProfitable && currentProfitPct < 0 && !isInTargetAssets;
         this.logger.log(`[TARGET EXIT CHECK] Evaluating exit for position not in target`, {
           symbol: pos.symbol,
           isInSignals,
+          isInTargetAssets,
           isBearish,
           isReconciliationPosition,
+          isLosingAndNotInTarget,
           positionAgeHours: positionAgeHours.toFixed(2),
           effectiveMinHoldHours: effectiveMinHoldHours.toFixed(2),
           currentProfitPct: currentProfitPct.toFixed(2),
@@ -1144,7 +1326,8 @@ export class StrategyService {
         
         if (positionAgeHours < effectiveMinHoldHours) {
           const hoursRemaining = effectiveMinHoldHours - positionAgeHours;
-          this.logger.log(`[TARGET EXIT SKIPPED] Position too new - ${pos.symbol}: held ${positionAgeHours.toFixed(1)}h, need ${effectiveMinHoldHours.toFixed(1)}h (${effectiveMinHoldCycles} cycles), ${hoursRemaining.toFixed(1)}h remaining${isReconciliationPosition ? ' (reconciliation position)' : ''}${isBearish ? ' (bearish)' : ''}`, {
+          const skipReason = isReconciliationPosition ? ' (reconciliation position)' : isBearish ? ' (bearish)' : isLosingAndNotInTarget ? ' (losing and not in top K)' : '';
+          this.logger.log(`[TARGET EXIT SKIPPED] Position too new - ${pos.symbol}: held ${positionAgeHours.toFixed(1)}h, need ${effectiveMinHoldHours.toFixed(1)}h (${effectiveMinHoldCycles} cycles), ${hoursRemaining.toFixed(1)}h remaining${skipReason}`, {
             symbol: pos.symbol,
             positionAgeHours: positionAgeHours.toFixed(2),
             minHoldHours: effectiveMinHoldHours.toFixed(2),
@@ -1181,10 +1364,13 @@ export class StrategyService {
           // Only exit if:
           // 1. We have a net profit (lock in gains), OR
           // 2. The loss is acceptable (less than 1.5% of entry value) AND position is old enough
+          // 3. For losing positions not in signals/target: allow slightly higher loss (2.5%) to cut losses
           // This respects the slow momentum philosophy: give positions time, but exit if they're clearly not working
           const maxAcceptableLoss = entryValue * 0.015; // 1.5% max loss for "not in target" exits
+          // For positions not in signals/target that are losing, be more aggressive (allow up to 2.5% loss)
+          const maxLossForLosingNotInTarget = !isInSignals && currentProfitPct < 0 ? entryValue * 0.025 : maxAcceptableLoss;
           
-          if (netProfit > 0 || (netProfit >= -maxAcceptableLoss && grossProfit > -maxAcceptableLoss)) {
+          if (netProfit > 0 || (netProfit >= -maxLossForLosingNotInTarget && grossProfit > -maxLossForLosingNotInTarget)) {
             this.logger.log(`[TARGET EXIT] Closing position not in target assets (held ${positionAgeHours.toFixed(2)}h)`, {
               symbol: pos.symbol,
               entryPrice: entryPrice.toFixed(4),
@@ -1212,8 +1398,11 @@ export class StrategyService {
               estimatedFees: estimatedFees.toFixed(4),
               netProfit: netProfit.toFixed(4),
               maxAcceptableLoss: maxAcceptableLoss.toFixed(4),
+              maxLossForLosingNotInTarget: maxLossForLosingNotInTarget.toFixed(4),
+              currentProfitPct: currentProfitPct.toFixed(2),
+              isInSignals,
               positionAgeHours: positionAgeHours.toFixed(2),
-              reason: 'Exit loss exceeds acceptable threshold (1.5%)',
+              reason: `Exit loss exceeds acceptable threshold (${(maxLossForLosingNotInTarget / entryValue * 100).toFixed(1)}%)`,
             });
           }
         } catch (error: any) {
@@ -1657,15 +1846,16 @@ export class StrategyService {
         const profitPct = ((currentPrice - entryPrice) / entryPrice) * 100;
         const currentPositionValue = parseFloat(position.quantity) * currentPrice;
         
-        // Only average up on positions that are:
-        // - Profitable (profit > 0%), OR
-        // - Not losing too much (loss < 5%)
-        if (profitPct <= -5) {
-          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - losing too much (${profitPct.toFixed(2)}%)`, {
+        // Only average up on PROFITABLE positions (profit > 0%)
+        // Averaging up on losing positions is averaging down, which increases risk
+        // We should only add to positions that are already making money
+        if (profitPct <= 0) {
+          this.logger.log(`[AVERAGING UP] Skipping ${position.symbol} - position is not profitable (${profitPct.toFixed(2)}%)`, {
             symbol: position.symbol,
             profitPct: profitPct.toFixed(2),
             entryPrice: entryPrice.toFixed(4),
             currentPrice: currentPrice.toFixed(4),
+            reason: 'Only averaging up on profitable positions to avoid increasing risk on losing trades',
           });
           continue;
         }

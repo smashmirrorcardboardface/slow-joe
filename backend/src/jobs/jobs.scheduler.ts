@@ -185,15 +185,15 @@ export class JobsScheduler {
               symbol: order.symbol,
             });
             
-            // For buy orders, place a market order to ensure execution
-            // (Sell orders are just cancelled - can't force a sell if we don't have the asset)
-            if (order.side === 'buy') {
+            // For both buy and sell orders, place a market order to ensure execution
+            // This ensures we don't miss fills when price moves away from our limit
+            if (order.side === 'buy' || order.side === 'sell') {
               try {
                 const remainingQty = order.remainingQuantity || order.quantity;
                 if (remainingQty > 0) {
-                  // Get current market price
+                  // Get current market price (ask for buys, bid for sells)
                   const ticker = await this.exchangeService.getTicker(order.symbol);
-                  const currentPrice = ticker.ask;
+                  const currentPrice = order.side === 'buy' ? ticker.ask : ticker.bid;
                   
                   // Check slippage (compare against original limit price)
                   const originalLimitPrice = order.price || 0;
@@ -208,20 +208,22 @@ export class JobsScheduler {
                     // Enqueue market order execution
                     await this.jobsService.enqueueOrderExecute(
                       order.symbol,
-                      'buy',
+                      order.side,
                       remainingQty,
                       currentPrice,
                     );
-                    this.logger.log(`Enqueued market order for stale buy order`, {
+                    this.logger.log(`Enqueued market order for stale ${order.side} order`, {
                       symbol: order.symbol,
+                      side: order.side,
                       quantity: remainingQty,
                       currentPrice,
                       originalLimitPrice,
                       slippagePct: slippagePct * 100,
                     });
                   } else {
-                    this.logger.warn(`Skipping market order for stale buy - slippage too high`, {
+                    this.logger.warn(`Skipping market order for stale ${order.side} - slippage too high`, {
                       symbol: order.symbol,
+                      side: order.side,
                       slippagePct: slippagePct * 100,
                       marketOrderMaxSlippage: marketOrderMaxSlippage * 100,
                       originalLimitPrice,
@@ -230,8 +232,9 @@ export class JobsScheduler {
                   }
                 }
               } catch (marketOrderError: any) {
-                this.logger.error(`Error placing market order for stale buy order`, marketOrderError.stack, {
+                this.logger.error(`Error placing market order for stale ${order.side} order`, marketOrderError.stack, {
                   symbol: order.symbol,
+                  side: order.side,
                   error: marketOrderError.message,
                 });
               }
