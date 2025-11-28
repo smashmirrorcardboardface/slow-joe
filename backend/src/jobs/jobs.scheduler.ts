@@ -205,12 +205,13 @@ export class JobsScheduler {
                   const marketOrderMaxSlippage = 0.01; // 1%
                   
                   if (slippagePct <= marketOrderMaxSlippage) {
-                    // Enqueue market order execution
+                    // Enqueue market order execution with forceMarketOrder flag
                     await this.jobsService.enqueueOrderExecute(
                       order.symbol,
                       order.side,
                       remainingQty,
                       currentPrice,
+                      true, // forceMarketOrder = true
                     );
                     this.logger.log(`Enqueued market order for stale ${order.side} order`, {
                       symbol: order.symbol,

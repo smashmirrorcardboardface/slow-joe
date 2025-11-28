@@ -47,8 +47,8 @@ export class OrderExecuteProcessor extends WorkerHost {
     return this.userrefPrefixCache;
   }
 
-  async process(job: Job<{ symbol: string; side: 'buy' | 'sell'; quantity: number; price: number }>) {
-    const { symbol, side, quantity, price } = job.data;
+  async process(job: Job<{ symbol: string; side: 'buy' | 'sell'; quantity: number; price: number; forceMarketOrder?: boolean }>) {
+    const { symbol, side, quantity, price, forceMarketOrder = false } = job.data;
     this.logger.log(`Executing ${side} order`, {
       jobId: job.id,
       symbol,
@@ -286,16 +286,23 @@ export class OrderExecuteProcessor extends WorkerHost {
       }
 
       const ticker = await this.exchangeService.getTicker(symbol);
-      // For BUY: place limit order slightly below ask to get maker fee
-      // For SELL: place limit order slightly above bid to get maker fee
-      // However, if the offset is too large, the order may never fill in a trending market
-      // So we cap the offset at 0.5% to ensure reasonable fill probability
-      const maxOffsetPct = 0.005; // 0.5% maximum offset
-      const effectiveOffsetPct = Math.min(makerOffsetPct, maxOffsetPct);
       
-      const limitPrice = side === 'buy' 
-        ? ticker.ask * (1 - effectiveOffsetPct)
-        : ticker.bid * (1 + effectiveOffsetPct);
+      // If forceMarketOrder is true (e.g., from stale order conversion), skip limit order and go straight to market
+      let limitPrice: number;
+      let orderResult: any;
+      let filled = false;
+      
+      if (!forceMarketOrder) {
+        // For BUY: place limit order slightly below ask to get maker fee
+        // For SELL: place limit order slightly above bid to get maker fee
+        // However, if the offset is too large, the order may never fill in a trending market
+        // So we cap the offset at 0.5% to ensure reasonable fill probability
+        const maxOffsetPct = 0.005; // 0.5% maximum offset
+        const effectiveOffsetPct = Math.min(makerOffsetPct, maxOffsetPct);
+        
+        limitPrice = side === 'buy' 
+          ? ticker.ask * (1 - effectiveOffsetPct)
+          : ticker.bid * (1 + effectiveOffsetPct);
       
       // Log if we're using a capped offset
       if (effectiveOffsetPct < makerOffsetPct) {
@@ -495,21 +502,32 @@ export class OrderExecuteProcessor extends WorkerHost {
           break;
         }
         
-        // Check if price is moving away from our limit price (every 2 minutes)
-        // If price is moving away significantly, convert to market order sooner
-        if (Date.now() - lastPriceCheck > 2 * 60 * 1000) { // Check every 2 minutes
+        // Check if price is moving away from our limit price (every 30 seconds for buy orders in uptrends)
+        // If price is moving away significantly, convert to market order sooner to avoid missing entries
+        const checkIntervalMs = side === 'buy' ? 30 * 1000 : 60 * 1000; // Check every 30s for buys, 60s for sells
+        if (Date.now() - lastPriceCheck > checkIntervalMs) {
           try {
             const currentTicker = await this.exchangeService.getTicker(symbol);
             const currentAsk = currentTicker.ask;
             const currentBid = currentTicker.bid;
+            const timeElapsedMinutes = (Date.now() - startTime) / 1000 / 60;
             
             if (side === 'buy') {
-              // For buy orders, if ask price is moving up and away from our limit, convert sooner
+              // For buy orders, be more aggressive about converting in uptrends
               const priceGap = (currentAsk - limitPrice) / limitPrice;
-              const priceMovedAway = currentAsk > lastAskPrice * 1.002; // Price moved up >0.2% since last check
+              const priceMovedAway = currentAsk > lastAskPrice * 1.001; // Price moved up >0.1% since last check (more sensitive)
               
-              if (priceGap > 0.01 && priceMovedAway) { // Gap >1% and price moving up
-                this.logger.warn(`Price moving away from limit order - converting to market order early`, {
+              // Convert to market order if:
+              // 1. Price is 0.5%+ above limit AND price is moving up (strong uptrend)
+              // 2. Price is 0.3%+ above limit AND we've waited 1+ minutes (don't wait too long)
+              // 3. Price is 1%+ above limit (original threshold, still valid)
+              const shouldConvert = 
+                (priceGap > 0.005 && priceMovedAway) || // 0.5% gap + moving up
+                (priceGap > 0.003 && timeElapsedMinutes >= 1) || // 0.3% gap + waited 1+ min
+                (priceGap > 0.01); // 1% gap (original threshold)
+              
+              if (shouldConvert) {
+                this.logger.warn(`Price moving away from limit buy order - converting to market order early to avoid missing entry`, {
                   jobId: job.id,
                   symbol,
                   side,
@@ -517,7 +535,11 @@ export class OrderExecuteProcessor extends WorkerHost {
                   currentAsk: currentAsk.toFixed(4),
                   lastAskPrice: lastAskPrice.toFixed(4),
                   priceGap: (priceGap * 100).toFixed(2),
-                  timeElapsed: ((Date.now() - startTime) / 1000 / 60).toFixed(1),
+                  priceMovedAway: ((currentAsk - lastAskPrice) / lastAskPrice * 100).toFixed(2),
+                  timeElapsed: timeElapsedMinutes.toFixed(1),
+                  reason: priceGap > 0.01 ? 'Large gap (>1%)' : 
+                         (priceGap > 0.005 && priceMovedAway) ? 'Uptrend detected (0.5%+ gap, price rising)' :
+                         'Waited 1+ min with 0.3%+ gap',
                 });
                 // Break out of loop to convert to market order
                 break;
@@ -884,7 +906,24 @@ export class OrderExecuteProcessor extends WorkerHost {
             return;
           }
         }
+      }
+      } else {
+        // If forceMarketOrder is true, skip limit order entirely and go straight to market order
+        this.logger.log(`Skipping limit order - forcing market order execution`, {
+          jobId: job.id,
+          symbol,
+          side,
+          reason: 'forceMarketOrder flag set (likely from stale order conversion)',
+        });
+        // Calculate expected price for market order
+        const currentTicker = await this.exchangeService.getTicker(symbol);
+        const expectedPrice = side === 'buy' ? currentTicker.ask : currentTicker.bid;
+        limitPrice = expectedPrice; // Use current price as reference for slippage calculation
+        filled = false; // Force market order path
+      }
 
+      // If order not filled (either limit order timeout or forceMarketOrder), place market order
+      if (!filled) {
         // Place market order as fallback
         // For market orders after a failed limit order, allow slightly higher slippage (up to 1%)
         // since we've already waited 15 minutes and the market may have moved

@@ -19,12 +19,13 @@ export class JobsService {
     await this.strategyEvaluateQueue.add('evaluate-strategy', {});
   }
 
-  async enqueueOrderExecute(symbol: string, side: 'buy' | 'sell', quantity: number, price: number) {
+  async enqueueOrderExecute(symbol: string, side: 'buy' | 'sell', quantity: number, price: number, forceMarketOrder?: boolean) {
     await this.orderExecuteQueue.add('execute-order', {
       symbol,
       side,
       quantity,
       price,
+      forceMarketOrder: forceMarketOrder || false,
     });
   }
 
